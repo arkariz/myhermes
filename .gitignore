@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.env
+workspace/*
+!workspace/.gitkeep
+*.egg-info/
+.ruff_cache/
+docker/spike/secrets/.env.spike

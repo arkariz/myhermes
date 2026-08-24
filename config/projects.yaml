@@ -1,0 +1,17 @@
+# Registered projects. Created by scripts/new-project.sh; edited by hand is fine.
+#
+# Agent state is a SIBLING of the source tree, never inside it -- generated
+# indexes must not pollute the application repository.
+
+projects: {}
+
+# Example:
+# projects:
+#   bonked:
+#     name: bonked
+#     host_path: D:/Projects/bonked
+#     state_path: D:/Projects/.agentic-dev/bonked
+#     platform: flutter
+#     telegram:
+#       chat_id: -1001234567890
+#       topic_id: 42

@@ -1,0 +1,30 @@
+[project]
+name = "agentic-dev"
+version = "0.1.0"
+description = "Local-first, Dockerized agentic engineering workspace (Pang redesign)."
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "tiktoken>=0.7",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "python-telegram-bot>=21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["orchestrator"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

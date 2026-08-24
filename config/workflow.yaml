@@ -1,0 +1,96 @@
+# Workflow state machine. Transitions are DATA, validated at load.
+# An LLM can never choose the next state -- only the engine and typed human
+# approval events move a project forward.
+#
+# kind:
+#   autonomous    - agent runs to completion, then advances. Always a boundary turn.
+#   collaborative - agent <-> human, indefinitely. An invocation ending is NOT
+#                   completion; only an explicit approval finishes the state.
+#   gate          - no agent runs. Only a typed approval event advances.
+
+initial: backlog
+
+states:
+  backlog:
+    kind: gate
+    approval_type: START_PROJECT
+    next: discovery
+
+  discovery:
+    kind: collaborative
+    role: planner
+    artifact: discovery.md
+    completion: approval
+    approval_type: APPROVE_DISCOVERY
+    next: planning
+
+  planning:
+    kind: collaborative
+    role: planner
+    artifact: prd.md
+    completion: approval
+    approval_type: APPROVE_PRD
+    next: product-design
+
+  product-design:
+    kind: collaborative
+    role: product-designer
+    artifact: product-design.md
+    completion: approval
+    approval_type: APPROVE_PRODUCT_DESIGN
+    next: architecture
+
+  architecture:
+    kind: collaborative
+    role: architect
+    artifact: architecture.md
+    completion: approval
+    approval_type: APPROVE_ARCHITECTURE
+    next: awaiting-approval
+
+  awaiting-approval:
+    kind: gate
+    approval_type: APPROVE_TECH_PLAN
+    next: implementation
+
+  implementation:
+    kind: autonomous
+    role: builder
+    max_attempts: 2
+    on_failure: blocked
+    next: review
+
+  review:
+    kind: autonomous
+    role: reviewer
+    max_attempts: 2
+    on_failure: blocked
+    next: qa
+
+  qa:
+    kind: autonomous
+    role: qa
+    max_attempts: 2
+    on_failure: blocked
+    next: awaiting-merge
+    # QA failure sends work back rather than blocking outright (Pang's pattern).
+    on_reject: implementation
+
+  awaiting-merge:
+    kind: gate
+    approval_type: APPROVE_MERGE
+    next: done
+
+  done:
+    kind: terminal
+
+  blocked:
+    kind: terminal
+    recoverable: true
+
+  cancelled:
+    kind: terminal
+
+  failed:
+    kind: terminal
+    recoverable: true

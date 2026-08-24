@@ -1,0 +1,121 @@
+# Role definitions: context mode, toolsets, budgets, and denylists.
+#
+# context_mode:
+#   assembled - the context builder pre-reads documents and embeds their content.
+#               Used for document roles working over a small, predictable set.
+#   guided    - the agent is handed PATHS + the codebase index and reads with its
+#               own tools, capped by read_budget. Used for code roles, where
+#               pre-assembly is a guess that is frequently wrong in both directions.
+#
+# context_denylist is a CORRECTNESS invariant, not a preference. A violation
+# fails the turn. Inherited from Pang's QA blinding rule.
+
+defaults:
+  toolsets: [skills]
+  context_mode: assembled
+
+roles:
+  planner:
+    context_mode: assembled
+    toolsets: [skills]
+    budget:
+      max_input_tokens: 12000
+      max_output_tokens: 4000
+
+  product-designer:
+    context_mode: assembled
+    toolsets: [skills]
+    budget:
+      max_input_tokens: 16000
+      max_output_tokens: 5000
+
+  architect:
+    context_mode: assembled
+    toolsets: [skills, terminal]
+    budget:
+      max_input_tokens: 24000
+      max_output_tokens: 7000
+
+  builder:
+    context_mode: guided
+    toolsets: [skills, terminal, files]
+    budget:
+      max_input_tokens: 20000
+      max_output_tokens: 6000
+    read_budget:
+      max_files: 40
+      max_bytes: 400000
+      max_tool_calls: 120
+    rtk: true
+
+  reviewer:
+    context_mode: guided
+    toolsets: [skills, terminal, files]
+    budget:
+      max_input_tokens: 18000
+      max_output_tokens: 5000
+    read_budget:
+      max_files: 30
+      max_bytes: 300000
+      max_tool_calls: 80
+    rtk: true
+    context_denylist:
+      - conversations/implementation/
+    denylist_reason: >
+      The reviewer must judge the diff on its merits, not be led by the
+      builder's own account of what it was trying to do.
+
+  qa:
+    context_mode: guided
+    toolsets: [skills, terminal]
+    budget:
+      max_input_tokens: 12000
+      max_output_tokens: 4000
+    read_budget:
+      max_files: 20
+      max_bytes: 200000
+      max_tool_calls: 60
+    rtk: true
+    context_allowlist:
+      - artifacts/prd.md#acceptance-criteria
+      - git-diff
+      - test-output
+    context_denylist:
+      - artifacts/tech-plan.md
+      - artifacts/architecture.md
+      - task-log.md
+      - conversations/implementation/
+    denylist_reason: >
+      QA must verify against acceptance criteria, not be anchored by builder
+      reasoning. Taken directly from Pang's handle_qa prompt.
+
+  summarizer:
+    context_mode: assembled
+    toolsets: []
+    budget:
+      max_input_tokens: 8000
+      max_output_tokens: 1500
+
+sessions:
+  # Boundary triggers that are NOT derivable from state alone.
+  max_session_turns: 12
+  max_session_age_minutes: 120
+
+  # SPIKE FINDING (verified, not assumed -- see docs/plan.md "Spike results"):
+  # HERMES_PROFILE does NOT isolate memory. Hermes runs a background
+  # "self-improvement" writer that saves user statements to
+  # ~/.hermes/memories/MEMORY.md regardless of --ignore-rules, --safe-mode,
+  # or memory.memory_enabled: false -- and that file is scoped to
+  # HERMES_HOME, not to the active profile. Two different profiles under one
+  # HERMES_HOME both recalled the same planted secret in testing.
+  #
+  # The only verified isolation boundary is a SEPARATE HERMES_HOME directory
+  # per project. This is mandatory, not an optimization: without it, one
+  # project's content can leak into another's context via MEMORY.md.
+  home_scope: project   # one HERMES_HOME per project_id, always
+  home_path_template: "/workspace/agent-state/{project_id}/.hermes-home"
+
+  # HERMES_PROFILE is still useful WITHIN one project's isolated home --
+  # it separates model/skills/toolset config per role -- but must never be
+  # relied on for memory isolation across projects.
+  profile_scope: role
