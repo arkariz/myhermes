@@ -70,6 +70,10 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/approvals.py` | §31 human-input semantics + `\`\`\`decision` block parsing |
 | `orchestrator/store.py`, `events.py` | Atomic filesystem persistence, append-only event log |
 | `runtime/hermes.py` | Hermes invocation — verified live against real API calls, not just unit-tested against a fake subprocess |
+| `orchestrator/config.py` | Loads `agents.yaml`/`models.yaml`, resolves `${VAR:-default}` |
+| `orchestrator/registry.py` | `config/projects.yaml` — project name → host path / state path |
+| `orchestrator/jobs.py` | `TurnRunner` — one full turn, wired end to end, verified live |
+| `orchestrator/cli.py` | `project new` / `turn` / `approve` / `status`, verified live end to end |
 
 ## What's still a spec, not code
 
@@ -84,11 +88,28 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 - `tools/dart_indexer/`, `indexing/graphify_adapter.py`.
 - `compose.yaml`.
 
-## Next: Phase 1 Step 6
+## Phase 1 is done and verified live
 
-`orchestrator/jobs.py` — the piece that actually calls `runtime/hermes.py`
-for a turn: pick full vs. continuation from `SessionManager.decide()`, hand
-the resulting `HermesRequest` to `runtime.hermes.run()` with
-`store.hermes_home()`, persist the turn via `ProjectStore`, and bound retries
-with `state_machine.fail()`. Then the CLI driver (`orchestrator/cli.py`) to
-run this Phase 1 demo end to end without Telegram.
+`orchestrator/jobs.py` (`TurnRunner`) ties state machine + sessions + context
+builder + `runtime/hermes.py` + store into one turn. `orchestrator/cli.py`
+drives it: `project new`, `turn`, `approve`, `status`. `orchestrator/config.py`
+and `orchestrator/registry.py` load `agents.yaml`/`models.yaml`/`projects.yaml`.
+169/169 tests pass, all with `hermes_run` monkeypatched — no subprocess, no
+network call, no cost.
+
+**Then the whole thing was run for real**, no mocks, against the actual
+CLI and OpenRouter (`docker/spike/demo.py`): `project new` → `approve
+START_PROJECT` → two discovery turns (the second one a genuine
+`chat -q --resume`, confirmed by the response correctly incorporating the
+first turn's requirement) → `approve APPROVE_DISCOVERY` → `status` showing
+`session: (none)` (the boundary invalidation firing live, not just in a
+unit test) → a fresh planning turn → `approve APPROVE_PRD`. Every state
+transition, every session open/resume/invalidate, and the exact-typed-
+approval rejection (a wrong approval type was correctly refused, exit 1)
+behaved exactly as designed.
+
+## Next: Phase 2
+
+Telegram (`telegram/bot.py`, `routing.py`, `handlers.py`) drives the same
+`TurnRunner` from a different entry point — inbox/outbox, inline-button
+approvals, async job dispatch so a multi-minute turn never blocks the bot.

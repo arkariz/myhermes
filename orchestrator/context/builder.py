@@ -47,6 +47,8 @@ class BuildRequest:
     read_budget: ReadBudget | None = None
     source_revision: str | None = None
     index_revision: str | None = None
+    artifact_name: str | None = None      # e.g. "prd.md" -- current state's artifact
+    referenced_paths: tuple[str, ...] = ()  # explicit paths for guided-retrieval roles
 
 
 class ContextProvider(Protocol):
