@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-226/226 tests pass. The test suite is the actual specification of the
+233/233 tests pass. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -78,12 +78,19 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
 | `orchestrator/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
+| `runtime/server.py` | `POST /run` — the HTTP boundary for the container topology; wraps `runtime/hermes.py` unchanged. Not yet called by `jobs.py` (see below) |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
-- `runtime/server.py` (the FastAPI service wrapping `runtime/hermes.py` for
-  the orchestrator to call over HTTP) and an RTK output-compression wrapper.
+- **`orchestrator/jobs.py` doesn't call `runtime/server.py` yet.** `TurnRunner`
+  still invokes `runtime.hermes.run()` as a direct in-process function call
+  — how Phase 1/2 were verified live without any Docker networking. Routing
+  it through the HTTP server instead (via an `httpx` client swapped in for
+  the current `hermes_run` import) is the next step toward the real
+  container topology; deliberately not done in the same pass that built the
+  server, since it touches every existing `hermes_run`-monkeypatch test.
+- An RTK output-compression wrapper (`runtime/rtk.py`).
   `docker/spike/Dockerfile` proves the base image works (Hermes CLI +
   OpenRouter installed and callable); the real agent-runtime Dockerfile
   still needs Flutter/Android/JDK/RTK added on top of it.
@@ -132,6 +139,31 @@ instead of relying on an opaque, now-discarded Hermes transcript. Optional
 by construction — a project whose `models.yaml` has no `summarizer` route
 just never calls this, same "absent config, unchanged behavior" pattern as
 Telegram's forum-topic auto-creation.
+
+## The runtime HTTP boundary
+
+```bash
+uvicorn runtime.server:app --port 8000
+```
+
+`runtime/server.py` — `POST /run` wraps `runtime.hermes.run()` behind HTTP,
+unchanged: same argv selection, same `HERMES_HOME` env handling, same
+response cleaning. This is the container-topology boundary the brief calls
+for — the orchestrator has no Docker socket (least privilege), so it can't
+`docker exec` into agent-runtime; agent-runtime exposes this instead.
+
+Verified live: started the real server, hit `/health`, then `POST /run`
+with no `hermes` binary installed on this host (it only exists inside
+`docker/spike/`'s container) — got back a real `HTTP 502` with
+`"failed to launch hermes: [WinError 2] The system cannot find the file
+specified"`, proving the request parsing → invocation attempt → error
+mapping path end to end, not just against a mock. 7 tests
+(`tests/test_server.py`) cover the same paths with `hermes_run` mocked for
+speed and repeatability.
+
+**Not yet done:** `orchestrator/jobs.py` calling this over HTTP instead of
+importing `runtime.hermes.run()` directly — see "What's still a spec"
+above for why that's a deliberately separate step.
 
 ## Benchmark: does the context/session design actually help?
 

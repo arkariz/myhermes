@@ -83,9 +83,10 @@ log (that's what git history is for).
 - [ ] The four Hermes spike measurements as an automated regression suite
       (re-run when the Hermes version bumps). Currently a one-time live
       run recorded in `docs/plan.md`, not a repeatable check.
-- [ ] `POST /run` returning a parseable `usage.json` + `session_id` over
-      HTTP. `runtime/hermes.py` does this as a direct function call today;
-      no HTTP boundary exists yet (see `runtime/server.py` below).
+- [x] `POST /run` returning a parseable `usage.json` + `session_id` over
+      HTTP. `runtime/server.py`, verified live (real server, real HTTP
+      call, real 502 mapping when the `hermes` binary isn't present). Not
+      yet called *by* `orchestrator/jobs.py` — see below.
 - [ ] RTK compression ratio, measured (`flutter test` with/without the
       wrapper). RTK isn't integrated at all yet.
 - [ ] `DartAnalyzerIndexer` against a toy Flutter app. Not started.
@@ -139,11 +140,15 @@ work in Phase 1 already covers most of it:
 
 ## Named gaps not yet tied to a specific phase
 
-- [ ] `runtime/server.py` — FastAPI HTTP wrapper around `runtime/hermes.py`,
+- [x] `runtime/server.py` — FastAPI HTTP wrapper around `runtime/hermes.py`,
       for the container-topology design where orchestrator and
-      agent-runtime are separate containers. Today the CLI and Telegram
-      both call `runtime.hermes.run()` in-process, which is why Phase 1/2
-      could be verified live without Docker networking.
+      agent-runtime are separate containers. Verified live.
+- [ ] `orchestrator/jobs.py` still calls `runtime.hermes.run()` in-process,
+      not through `runtime/server.py` over HTTP — which is why Phase 1/2
+      could be verified live without Docker networking, and why the
+      container topology isn't real yet even though the HTTP boundary
+      exists. Needs an `httpx`-based client swapped in for the current
+      `hermes_run` import, touching every existing monkeypatch test.
 - [ ] `runtime/rtk.py` — tool-output compression wrapper + ratio metrics.
 - [ ] `compose.yaml` — no container topology defined yet; everything
       verified live so far ran directly on the host or in the standalone
