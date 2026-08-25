@@ -79,6 +79,9 @@ class ProjectStore:
     def artifact(self, name: str) -> Path:
         return self.root / "artifacts" / name
 
+    def artifacts_dir(self) -> Path:
+        return self.root / "artifacts"
+
     def decisions_dir(self) -> Path:
         return self.root / "decisions"
 

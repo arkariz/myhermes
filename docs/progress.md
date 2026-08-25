@@ -91,7 +91,7 @@ log (that's what git history is for).
       wrapper). RTK isn't integrated at all yet.
 - [ ] `DartAnalyzerIndexer` against a toy Flutter app. Not started.
 
-## Phase 3 — Product workflow (partially done, ahead of schedule)
+## Phase 3 — Product workflow (done, ahead of schedule)
 
 The plan scoped this as architecture-only for now, but the state machine
 work in Phase 1 already covers most of it:
@@ -100,9 +100,17 @@ work in Phase 1 already covers most of it:
       each with its own role, artifact, and approval gate.
 - [x] Decision extraction (```decision``` fenced blocks → `decisions/`).
 - [x] Approval gates enforcing exact-typed approval.
-- [ ] Artifact versioning via git (currently a plain integer
-      `artifact_revision` counter, not actual git history/diffing of
-      artifact content).
+- [x] Artifact versioning via git — `orchestrator/artifact_versioning.py`.
+      `artifacts/` is its own git repo; `TurnRunner` snapshots it after
+      every successful turn, committing only if something actually
+      changed (no empty commits). Scoped to `artifacts/` alone, not the
+      whole agent-state tree, since `turns/`/`conversations/`/
+      `events.jsonl` are already append-only. The plain integer
+      `artifact_revision` counter stays too — it's what session-boundary
+      logic keys on, and this doesn't replace that, it adds real diffable
+      history alongside it. Tested against a real `git` subprocess, not
+      mocked (same reasoning as `test_store.py`: the property under test
+      is git's own behavior).
 
 ## Phase 4 — Codebase intelligence
 

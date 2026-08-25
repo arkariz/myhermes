@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-241/241 tests pass. The test suite is the actual specification of the
+253/253 tests pass. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -77,6 +77,7 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/cli.py` | `project new` / `turn` / `approve` / `status`, verified live end to end |
 | `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
 | `orchestrator/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
+| `orchestrator/artifact_versioning.py` | `artifacts/` as a real git repo — `TurnRunner` snapshots it after every successful turn, no empty commits |
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
 | `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |

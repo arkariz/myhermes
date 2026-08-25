@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import summarizer
+from . import artifact_versioning, summarizer
 from .approvals import parse_decision_blocks
 from .config import AgentsConfig, ModelsConfig
 from .context.builder import BuildRequest, ContextBuilder
@@ -210,6 +210,8 @@ class TurnRunner:
         if "summarizer" in self.models.routes:
             self._update_summary(workflow_state_name, turn_id, human_message, result.response)
 
+        self._version_artifacts(workflow_state_name, turn_id)
+
         self.store.update_state(attempts=0)
         return TurnOutcome(
             turn_id=turn_id, response=result.response, session=session,
@@ -298,6 +300,23 @@ class TurnRunner:
         if not result.failed:
             self.events.emit(
                 EventType.SUMMARY_UPDATED, workflow_state=workflow_state, turn_id=turn_id,
+            )
+
+    def _version_artifacts(self, workflow_state: str, turn_id: str) -> None:
+        """Snapshot artifacts/ into git if anything changed this turn.
+
+        Doesn't care how the change got there -- an agent's own file-write
+        tool today, a human editing by hand, or a future explicit
+        "extract artifact from response" step all look identical here:
+        whatever's on disk gets committed if it differs from last time.
+        """
+        commit_hash = artifact_versioning.commit(
+            self.store.artifacts_dir(), message=f"{workflow_state} / {turn_id}",
+        )
+        if commit_hash is not None:
+            self.events.emit(
+                EventType.ARTIFACT_UPDATED, workflow_state=workflow_state, turn_id=turn_id,
+                payload={"commit": commit_hash},
             )
 
     def _update_session(self, *, existing_session, decision, state, role, result, turn_id, state_data):

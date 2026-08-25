@@ -357,3 +357,47 @@ def test_runtime_client_error_becomes_a_runtime_error(monkeypatch, runner):
 
     with pytest.raises(RuntimeError, match="runtime server call failed"):
         runner.run_turn("Build a habit tracker.")
+
+
+# ---- artifact versioning (orchestrator/artifact_versioning.py) -------------
+
+
+def test_a_written_artifact_gets_committed(monkeypatch, runner):
+    def fake_run_that_writes_the_artifact(request, usage_file=None):
+        runner.store.artifact("prd.md").parent.mkdir(parents=True, exist_ok=True)
+        runner.store.artifact("prd.md").write_text("# PRD v1", encoding="utf-8")
+        return HermesResult(
+            response="Drafted the PRD.", usage={"failed": False, "session_id": "sess-1"},
+            exit_code=0, session_id="sess-1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_the_artifact)
+    runner.run_turn("Build a habit tracker.")
+
+    from orchestrator.artifact_versioning import log
+    entries = log(runner.store.artifacts_dir())
+    assert len(entries) == 1
+    assert "planning" in entries[0]["message"]
+
+
+def test_a_turn_with_no_artifact_change_commits_nothing(monkeypatch, runner):
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Just a question."))
+    runner.run_turn("Build a habit tracker.")
+
+    from orchestrator.artifact_versioning import log
+    assert log(runner.store.artifacts_dir()) == []
+
+
+def test_a_failed_turn_does_not_commit(monkeypatch, runner):
+    def fake_run_that_writes_then_fails(request, usage_file=None):
+        runner.store.artifact("prd.md").parent.mkdir(parents=True, exist_ok=True)
+        runner.store.artifact("prd.md").write_text("half-written", encoding="utf-8")
+        return HermesResult(
+            response="", usage={"failed": True, "failure": "boom"}, exit_code=1, session_id=None,
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_then_fails)
+    runner.run_turn("Build a habit tracker.")
+
+    from orchestrator.artifact_versioning import log
+    assert log(runner.store.artifacts_dir()) == []
