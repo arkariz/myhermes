@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-308/308 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+313/313 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -82,7 +82,8 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
 | `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
-| `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Not wired into anything yet — nothing produces real tool output until Phase 6's `POST /exec` exists |
+| `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Verified live |
+| `runtime/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. The endpoint Phase 6 names for `flutter pub get/analyze/test/build`; not yet called by anything, and no toolchain exists in the image to run it against. Verified live over a real HTTP call to a real `uvicorn` subprocess |
 | `orchestrator/project_git.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
 | `orchestrator/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
 | `config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
@@ -93,8 +94,9 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 - Resolved (not just AST) Dart analysis (`calls`/`instantiates` edges,
   needs `flutter pub get` + a real `AnalysisContextCollection`), and a
   `GraphifyIndexer` for non-Dart repos — see `docs/progress.md` Phase 4.
-- `runtime/rtk.py` exists and is tested against real subprocess output, but
-  isn't called by anything real yet — that's Phase 6's `POST /exec`.
+- No role's toolset yet routes a terminal command through `/exec` instead
+  of Hermes's own CLI sandbox — the endpoint exists and is verified live,
+  but nothing calls it end to end from a real turn.
 - Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
   Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
   needs to actually build a Flutter app.
@@ -352,7 +354,7 @@ and the reviewer's actual rendered prompt embedded the real diff text
 (`+class Feature`). 19 new tests across `test_project_git.py`,
 `test_providers.py`, and `test_jobs.py`.
 
-## RTK: tool-output compression, ready but not wired in yet
+## RTK: tool-output compression, now served over HTTP
 
 `runtime/rtk.py` implements the job the plan's "RTK (Rust Token Killer)"
 concept names — shrinking verbose tool output before it re-enters
@@ -365,14 +367,29 @@ real subprocess — stdout and stderr merged before compression, since a
 build tool interleaves them meaningfully — and returns a *measured*
 `CompressionResult.ratio`, never an assumed one; the plan is explicit RTK
 should be dropped if it doesn't pay off, which only a real number can
-decide.
+decide. 8 tests, including one against a real subprocess printing 500
+identical lines (>90% measured reduction, not asserted from a fixture).
 
-**Not wired into anything yet, on purpose**: there is no toolchain in the
-system producing real tool output until Phase 6's `POST /exec`
-(RTK-wrapped `flutter test`/`analyze`/`build`) exists, so there's nothing
-to wrap end to end before then. 8 tests, including one against a real
-subprocess printing 500 identical lines (>90% measured reduction, not
-asserted from a fixture).
+**`runtime/server.py::POST /exec`** is the endpoint the plan names for
+RTK-wrapped `flutter pub get/analyze/test/build apk`: it runs a literal
+`argv` (a list, not a shell string — nothing for a shell to reinterpret)
+in a given `cwd` and returns `rtk.run()`'s compressed output plus the
+measured ratio. Generic on purpose — the endpoint doesn't need to know
+which specific tool it's running, only how to run and compress *a*
+command, whether that ends up being `flutter`, `git`, or `rg`.
+
+**Verified live twice**: FastAPI's `TestClient` (in-process, 5 tests in
+`tests/test_server.py`), then a real `uvicorn` subprocess reached over an
+actual HTTP call from a separate Python process — 500 repeated lines came
+back compressed to one, 99.66% measured reduction, matching `rtk.py`'s own
+live-verified ratio.
+
+**Not called by anything yet, on purpose**: no role's `terminal` toolset
+currently routes a command through this endpoint instead of running
+inside Hermes's own CLI sandbox, and `docker/agent-runtime/Dockerfile` has
+no Flutter/Android SDK/JDK on top of it yet for `/exec` to actually run
+against — a large, slow image build (multiple gigabytes) deliberately left
+for its own pass rather than folded in here.
 
 ## Benchmark: does the context/session design actually help?
 

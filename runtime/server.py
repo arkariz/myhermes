@@ -25,11 +25,13 @@ its own pass rather than riding along with this one.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from runtime import rtk
 from runtime.hermes import HermesInvocationError, HermesRequest
 from runtime.hermes import run as hermes_run
 
@@ -93,4 +95,59 @@ def run(payload: RunRequest) -> RunResponse:
         exit_code=result.exit_code,
         session_id=result.session_id,
         failed=result.failed,
+    )
+
+
+class ExecRequest(BaseModel):
+    argv: list[str]
+    cwd: str
+    tool: str | None = None
+    timeout_seconds: float = 300.0
+
+
+class ExecResponse(BaseModel):
+    returncode: int
+    output: str
+    original_bytes: int
+    compressed_bytes: int
+    ratio: float
+
+
+@app.post("/exec", response_model=ExecResponse)
+def exec_command(payload: ExecRequest) -> ExecResponse:
+    """Run a real toolchain command (`flutter pub get`/`analyze`/`test`/
+    `build`, `git`, `rg`, ...) and return its RTK-compressed output.
+
+    `argv` is a literal list, executed without a shell -- there is no
+    string concatenation for a shell to reinterpret, so this is not a
+    shell-injection surface the way a single command string would be.
+    This is still a "run what I'm told" endpoint by design (the brief's
+    `POST /exec`): it trusts its caller, exactly as `/run` trusts its
+    caller to have already built a safe prompt. That caller is
+    agent-runtime's *own* orchestrator container, reachable only over the
+    internal compose network -- nothing external ever calls this directly.
+    """
+    cwd = Path(payload.cwd)
+    if not cwd.is_dir():
+        raise HTTPException(status_code=400, detail=f"cwd does not exist: {cwd}")
+    if not payload.argv:
+        raise HTTPException(status_code=400, detail="argv must not be empty")
+
+    try:
+        result = rtk.run(
+            payload.argv, tool=payload.tool, cwd=cwd, timeout_seconds=payload.timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"could not launch {payload.argv[0]!r}: {exc}",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+
+    return ExecResponse(
+        returncode=result.returncode,
+        output=result.compression.text,
+        original_bytes=result.compression.original_bytes,
+        compressed_bytes=result.compression.compressed_bytes,
+        ratio=result.compression.ratio,
     )

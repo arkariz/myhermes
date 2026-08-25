@@ -9,6 +9,8 @@ own test suite's job.
 
 from __future__ import annotations
 
+import sys
+
 from fastapi.testclient import TestClient
 
 import runtime.server as server_module
@@ -132,3 +134,57 @@ def test_run_maps_invocation_error_to_502(monkeypatch, tmp_path):
 def test_run_rejects_a_malformed_request():
     response = client.post("/run", json={"prompt": "hi"})  # missing required fields
     assert response.status_code == 422
+
+
+# ---- /exec (Phase 6's toolchain endpoint, RTK-wrapped) -----------------------
+#
+# argv runs a real subprocess (this test's own Python interpreter) -- no
+# mocking here, same convention as tests/test_rtk.py, since what's under
+# test is that this endpoint actually launches something and compresses
+# its real output, not just that it calls a function correctly.
+
+
+def test_exec_runs_a_real_command_and_compresses_repetitive_output(tmp_path):
+    response = client.post("/exec", json={
+        "argv": [sys.executable, "-c", "for i in range(500): print('build: OK')"],
+        "cwd": str(tmp_path),
+        "tool": "fake-build-tool",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["returncode"] == 0
+    assert "[x500]" in body["output"]
+    assert body["ratio"] > 0.9
+
+
+def test_exec_reports_a_real_nonzero_return_code(tmp_path):
+    response = client.post("/exec", json={
+        "argv": [sys.executable, "-c", "import sys; sys.exit(3)"],
+        "cwd": str(tmp_path),
+    })
+
+    assert response.status_code == 200
+    assert response.json()["returncode"] == 3
+
+
+def test_exec_rejects_a_cwd_that_does_not_exist(tmp_path):
+    response = client.post("/exec", json={
+        "argv": [sys.executable, "--version"],
+        "cwd": str(tmp_path / "does-not-exist"),
+    })
+
+    assert response.status_code == 400
+
+
+def test_exec_rejects_an_empty_argv(tmp_path):
+    response = client.post("/exec", json={"argv": [], "cwd": str(tmp_path)})
+    assert response.status_code == 400
+
+
+def test_exec_maps_a_missing_executable_to_502(tmp_path):
+    response = client.post("/exec", json={
+        "argv": ["this-command-does-not-exist-anywhere"],
+        "cwd": str(tmp_path),
+    })
+    assert response.status_code == 502

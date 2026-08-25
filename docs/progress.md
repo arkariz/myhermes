@@ -250,12 +250,32 @@ work in Phase 1 already covers most of it:
       yet operates on more than the project's current branch/working tree
       (no multi-branch or PR-based flow exists to need it).
 
-## Phase 6 — Flutter toolchain
+## Phase 6 — Flutter toolchain (endpoint done; toolchain image not started)
 
-- [ ] Not started. `POST /exec`, RTK-wrapped `flutter pub get / analyze /
-      test / build apk`. `docker/agent-runtime/Dockerfile` now exists and
-      is verified live (serves `runtime/server.py`, real Hermes CLI inside)
-      but has no Flutter/Android SDK/JDK on top of it yet.
+- [x] `POST /exec` (`runtime/server.py`) — runs a literal `argv` (no shell,
+      so there's no string for a shell to reinterpret) in a given `cwd`
+      and returns its `runtime/rtk.py`-compressed output plus the measured
+      ratio. This is the endpoint the brief names for RTK-wrapped
+      `flutter pub get / analyze / test / build apk`, `git`, `rg`, etc. --
+      generic by design, since the endpoint doesn't need to know which
+      specific tool it's running, only how to run and compress *a*
+      command. 5 new tests in `tests/test_server.py`. **Verified live**
+      twice: FastAPI's `TestClient` (in-process) and a real `uvicorn`
+      subprocess reached over a real HTTP call from a separate process --
+      500 repeated lines came back compressed to one, 99.66% measured
+      reduction, matching `runtime/rtk.py`'s own live-verified ratio.
+- [ ] Not called by anything yet. No role's toolset currently routes a
+      terminal command through this endpoint instead of running inside
+      Hermes's own CLI sandbox -- that wiring, plus whatever `builder`'s
+      `toolsets: [terminal]` actually resolves to today, is unexplored.
+- [ ] `docker/agent-runtime/Dockerfile` still has no Flutter/Android
+      SDK/JDK on top of it -- it serves `runtime/server.py` with a real
+      Hermes CLI inside, verified live, but `flutter pub get/analyze/test/
+      build apk` have nothing to actually run against in that image yet.
+      Deliberately not started in this pass: it's a large, slow image
+      build (Flutter SDK plus a full Android SDK/JDK is multiple
+      gigabytes), independent of the code above, and worth doing as its
+      own deliberate step rather than folding into an unrelated commit.
 
 ## Phase 7 — Optional infra
 
