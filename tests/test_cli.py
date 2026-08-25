@@ -3,11 +3,14 @@ config so nothing touches the real config/projects.yaml. hermes_run is
 monkeypatched; no subprocess or network call happens here.
 """
 
+from dataclasses import replace
+
 import pytest
 
 import orchestrator.cli as cli_module
 import orchestrator.jobs as jobs_module
 from runtime.hermes import HermesResult
+from settings import Settings
 
 
 WORKFLOW_YAML = """
@@ -47,18 +50,25 @@ def cli_env(tmp_path, monkeypatch):
     (config_dir / "agents.yaml").write_text(AGENTS_YAML)
     (config_dir / "models.yaml").write_text(MODELS_YAML)
 
-    # Regression: this used to write to tmp_path/"souls", but cli.py:108
-    # passes souls_dir=str(CONFIG_DIR / "souls") -- so no CLI test ever
+    # Regression: this used to write to tmp_path/"souls", but cli.py read
+    # settings.souls_dir == config_dir/"souls" -- so no CLI test ever
     # actually loaded a soul file, and every one still passed, because
     # RoleSoulProvider degrades a missing soul to [] rather than raising.
     souls_dir = config_dir / "souls"
     souls_dir.mkdir()
     (souls_dir / "planner.md").write_text("You are the planner.")
 
-    monkeypatch.setattr(cli_module, "CONFIG_DIR", config_dir)
-    # REPO_ROOT is read exactly once, at module-import time, to compute
-    # CONFIG_DIR -- patching it here after that has already happened does
-    # nothing. Not patched.
+    # settings.py replaces the old CONFIG_DIR/REPO_ROOT module constants --
+    # this is the "test/bootstrap seam" the module was designed around:
+    # swap the whole frozen instance rather than patch individual paths.
+    monkeypatch.setattr(cli_module, "settings", Settings(
+        workspace=tmp_path,
+        dart_indexer_dir=tmp_path / "tools" / "dart_indexer",
+        runtime_url=None,
+        telegram_bot_token=None,
+        telegram_forum_chat_id=None,
+        telegram_default_host_root=tmp_path / "projects",
+    ))
 
     return tmp_path
 
@@ -210,8 +220,7 @@ def test_approve_does_not_auto_continue_into_a_terminal_state(cli_env, monkeypat
 
 
 def test_project_new_without_telegram_env_skips_topic_creation(cli_env, monkeypatch):
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_FORUM_CHAT_ID", raising=False)
+    # cli_env's default Settings already has no telegram token/chat_id set.
     called = []
     monkeypatch.setattr(cli_module, "create_forum_topic", lambda *a, **k: called.append(1) or 1)
 
@@ -223,8 +232,9 @@ def test_project_new_without_telegram_env_skips_topic_creation(cli_env, monkeypa
 
 
 def test_project_new_with_telegram_env_creates_and_links_topic(cli_env, monkeypatch, capsys):
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-    monkeypatch.setenv("TELEGRAM_FORUM_CHAT_ID", "555")
+    monkeypatch.setattr(cli_module, "settings", replace(
+        cli_module.settings, telegram_bot_token="fake-token", telegram_forum_chat_id=555,
+    ))
     captured_args = {}
 
     def fake_create(token, chat_id, name):
@@ -245,8 +255,9 @@ def test_project_new_with_telegram_env_creates_and_links_topic(cli_env, monkeypa
 def test_project_new_reports_but_survives_a_telegram_failure(cli_env, monkeypatch, capsys):
     from telegram_bot.topics import ForumTopicError
 
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
-    monkeypatch.setenv("TELEGRAM_FORUM_CHAT_ID", "555")
+    monkeypatch.setattr(cli_module, "settings", replace(
+        cli_module.settings, telegram_bot_token="fake-token", telegram_forum_chat_id=555,
+    ))
 
     def fake_create(token, chat_id, name):
         raise ForumTopicError("chat is not a forum")

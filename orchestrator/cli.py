@@ -13,13 +13,13 @@ same TurnRunner, just from a different entry point.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from indexing.dart_adapter import DartAnalyzerIndexer
 from indexing.remote import RemoteIndexer
+from settings import settings
 from telegram_bot.topics import ForumTopicError, create_forum_topic
 
 from .approval_flow import apply_approval, default_continuation_message
@@ -30,24 +30,21 @@ from .registry import ProjectRegistry
 from .state_machine import WorkflowDefinition, WorkflowError
 from .store import ProjectStore
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = REPO_ROOT / "config"
-
 
 def _load_workflow() -> WorkflowDefinition:
-    return WorkflowDefinition.load(CONFIG_DIR / "workflow.yaml")
+    return WorkflowDefinition.load(settings.workflow_file)
 
 
 def _load_agents() -> AgentsConfig:
-    return AgentsConfig.load(CONFIG_DIR / "agents.yaml")
+    return AgentsConfig.load(settings.agents_file)
 
 
 def _load_models() -> ModelsConfig:
-    return ModelsConfig.load(CONFIG_DIR / "models.yaml")
+    return ModelsConfig.load(settings.models_file)
 
 
 def _registry() -> ProjectRegistry:
-    return ProjectRegistry(CONFIG_DIR / "projects.yaml")
+    return ProjectRegistry(settings.projects_file)
 
 
 def cmd_project_new(args: argparse.Namespace) -> int:
@@ -83,29 +80,29 @@ def _maybe_create_telegram_topic(reg: ProjectRegistry, project_id: str) -> None:
     and swallowed, not raised, because the project itself was already
     created successfully by the time this runs.
     """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_FORUM_CHAT_ID")
+    token = settings.telegram_bot_token
+    chat_id = settings.telegram_forum_chat_id
     if not token or not chat_id:
         return
 
     try:
-        thread_id = create_forum_topic(token, int(chat_id), project_id)
+        thread_id = create_forum_topic(token, chat_id, project_id)
     except ForumTopicError as exc:
         print(f"  telegram: could not create a forum topic ({exc})", file=sys.stderr)
         return
 
-    reg.link_telegram(project_id, chat_id=int(chat_id), thread_id=thread_id)
+    reg.link_telegram(project_id, chat_id=chat_id, thread_id=thread_id)
     print(f"  telegram: created topic {project_id!r} (thread {thread_id}) and linked it")
 
 
 def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
     entry = _registry().get(project_id)
     store = ProjectStore(entry.state_path)
-    runtime_url = os.environ.get("AGENTIC_RUNTIME_URL")
+    runtime_url = settings.runtime_url
     runner = TurnRunner(
         project_id=project_id, store=store, workflow=_load_workflow(),
         agents=_load_agents(), models=_load_models(),
-        souls_dir=str(CONFIG_DIR / "souls"),
+        souls_dir=str(settings.souls_dir),
         # Unset (the default) means runtime.hermes.run() in-process, same
         # single-host behavior as every live run so far. Set this to route
         # Hermes invocations through runtime/server.py over HTTP instead.

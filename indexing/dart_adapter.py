@@ -14,10 +14,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from .port import IndexEdge, IndexNode, IndexResult
+from settings import settings
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DART_INDEXER_DIR = REPO_ROOT / "tools" / "dart_indexer"
+from .port import IndexEdge, IndexNode, IndexResult
 
 
 class DartIndexerError(Exception):
@@ -48,7 +47,7 @@ class DartAnalyzerIndexer:
         ]
         try:
             result = subprocess.run(
-                argv, cwd=DART_INDEXER_DIR, capture_output=True, text=True,
+                argv, cwd=settings.dart_indexer_dir, capture_output=True, text=True,
                 timeout=timeout_seconds,
             )
         except (OSError, subprocess.SubprocessError) as exc:

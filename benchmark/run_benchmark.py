@@ -34,8 +34,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+# Bootstrapping sys.path so `python benchmark/run_benchmark.py` (a direct
+# script invocation, not `-m`) can find the orchestrator/runtime/settings
+# top-level modules -- this is the one legitimate use of Path(__file__)
+# in this codebase: it locates the CODE (where to import from), never the
+# CONFIG (where workflow.yaml/agents.yaml live, which is settings.py's
+# job below). `python -m benchmark.run_benchmark` from the repo root
+# doesn't need this at all (the interpreter already puts cwd on
+# sys.path), but the insert is harmless and keeps the script runnable
+# either way.
+_CODE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_CODE_ROOT))
 
 import orchestrator.jobs as jobs_module  # noqa: E402
 import orchestrator.summarizer as summarizer_module  # noqa: E402
@@ -52,9 +61,10 @@ from runtime.hermes import HermesResult  # noqa: E402
 
 from benchmark.naive_baseline import run_naive  # noqa: E402
 from benchmark.scenario import SCENARIO, Approval, Turn  # noqa: E402
+from settings import settings  # noqa: E402
 
-CONFIG_DIR = REPO_ROOT / "config"
-SOULS_DIR = CONFIG_DIR / "souls"
+CONFIG_DIR = settings.config_dir
+SOULS_DIR = settings.souls_dir
 
 
 def _approve(store: ProjectStore, workflow: WorkflowDefinition, approval_type: str) -> str:

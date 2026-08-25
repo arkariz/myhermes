@@ -1,8 +1,6 @@
 """The state machine must be boring and total: no dangling edges, no way for
 an LLM to move a project, no unbounded retry."""
 
-from pathlib import Path
-
 import pytest
 
 from orchestrator.state_machine import (
@@ -10,13 +8,12 @@ from orchestrator.state_machine import (
     WorkflowDefinition,
     WorkflowError,
 )
-
-CONFIG = Path(__file__).resolve().parents[1] / "config" / "workflow.yaml"
+from settings import settings
 
 
 @pytest.fixture(scope="module")
 def wf() -> WorkflowDefinition:
-    return WorkflowDefinition.load(CONFIG)
+    return WorkflowDefinition.load(settings.workflow_file)
 
 
 def test_shipped_config_loads_and_validates(wf):

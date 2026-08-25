@@ -6,18 +6,14 @@ config/workflow.yaml well before their souls existed). This test makes
 that omission loud instead of silent.
 """
 
-from pathlib import Path
-
 from orchestrator.state_machine import WorkflowDefinition
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = REPO_ROOT / "config"
+from settings import settings
 
 
 def test_every_agent_running_workflow_role_has_a_soul_file():
-    workflow = WorkflowDefinition.load(CONFIG_DIR / "workflow.yaml")
+    workflow = WorkflowDefinition.load(settings.workflow_file)
     roles = {state.role for state in workflow.states.values() if state.runs_agent}
 
-    missing = [role for role in roles if not (CONFIG_DIR / "souls" / f"{role}.md").exists()]
+    missing = [role for role in roles if not (settings.souls_dir / f"{role}.md").exists()]
 
     assert missing == []

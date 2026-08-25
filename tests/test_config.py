@@ -1,14 +1,10 @@
 """Config loaders for agents.yaml / models.yaml, tested against both the
 real shipped files and synthetic edge cases."""
 
-import os
-from pathlib import Path
-
 import pytest
 
 from orchestrator.config import AgentsConfig, ModelsConfig, resolve_env_placeholders
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from settings import settings
 
 
 # ---- resolve_env_placeholders ----------------------------------------
@@ -43,20 +39,20 @@ def test_falls_back_to_default_when_env_var_is_set_but_empty(monkeypatch):
 
 
 def test_loads_the_real_agents_yaml():
-    cfg = AgentsConfig.load(REPO_ROOT / "config" / "agents.yaml")
+    cfg = AgentsConfig.load(settings.agents_file)
     assert "planner" in cfg.roles
     assert "qa" in cfg.roles
 
 
 def test_qa_denylist_matches_the_pang_derived_rule():
-    cfg = AgentsConfig.load(REPO_ROOT / "config" / "agents.yaml")
+    cfg = AgentsConfig.load(settings.agents_file)
     qa = cfg.get("qa")
     assert "artifacts/tech-plan.md" in qa.denylist
     assert qa.denylist_reason is not None
 
 
 def test_document_roles_are_assembled_and_code_roles_are_guided():
-    cfg = AgentsConfig.load(REPO_ROOT / "config" / "agents.yaml")
+    cfg = AgentsConfig.load(settings.agents_file)
     assert cfg.get("planner").context_mode == "assembled"
     assert cfg.get("builder").context_mode == "guided"
     assert cfg.get("builder").read_budget is not None
@@ -64,7 +60,7 @@ def test_document_roles_are_assembled_and_code_roles_are_guided():
 
 
 def test_unknown_role_raises():
-    cfg = AgentsConfig.load(REPO_ROOT / "config" / "agents.yaml")
+    cfg = AgentsConfig.load(settings.agents_file)
     with pytest.raises(KeyError):
         cfg.get("not-a-role")
 
@@ -88,7 +84,7 @@ roles:
 
 def test_loads_the_real_models_yaml(monkeypatch):
     monkeypatch.delenv("PLANNER_MODEL", raising=False)
-    cfg = ModelsConfig.load(REPO_ROOT / "config" / "models.yaml")
+    cfg = ModelsConfig.load(settings.models_file)
     route = cfg.get("planner")
     assert route.provider == "openrouter"
     assert route.model  # resolved to the default, not left as a placeholder
@@ -97,11 +93,11 @@ def test_loads_the_real_models_yaml(monkeypatch):
 
 def test_env_override_flows_through_models_yaml(monkeypatch):
     monkeypatch.setenv("BUILDER_MODEL", "test/override-model")
-    cfg = ModelsConfig.load(REPO_ROOT / "config" / "models.yaml")
+    cfg = ModelsConfig.load(settings.models_file)
     assert cfg.get("builder").model == "test/override-model"
 
 
 def test_unknown_role_raises_for_models_too():
-    cfg = ModelsConfig.load(REPO_ROOT / "config" / "models.yaml")
+    cfg = ModelsConfig.load(settings.models_file)
     with pytest.raises(KeyError):
         cfg.get("not-a-role")

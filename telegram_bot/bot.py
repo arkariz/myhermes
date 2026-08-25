@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 from telegram import BotCommand
@@ -25,13 +24,11 @@ from telegram.ext import (
 )
 
 from orchestrator.registry import ProjectRegistry
+from settings import settings
 
 from . import handlers
 
 logger = logging.getLogger(__name__)
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = REPO_ROOT / "config"
 
 # Single source of truth for both CommandHandler registration (below) and
 # the autocomplete menu Telegram shows when a user types "/" (via
@@ -56,7 +53,8 @@ async def _post_init(app: Application) -> None:
     app.bot_data["worker_task"] = asyncio.create_task(handlers.inbox_worker(app))
 
 
-def build_application(token: str, *, config_dir: Path = CONFIG_DIR) -> Application:
+def build_application(token: str, *, config_dir: Path | None = None) -> Application:
+    config_dir = config_dir if config_dir is not None else settings.config_dir
     app = Application.builder().token(token).post_init(_post_init).build()
 
     app.bot_data["config_dir"] = config_dir
@@ -75,7 +73,7 @@ def build_application(token: str, *, config_dir: Path = CONFIG_DIR) -> Applicati
 
 
 def main() -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    token = settings.telegram_bot_token
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
 
