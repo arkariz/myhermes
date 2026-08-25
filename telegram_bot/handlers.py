@@ -103,6 +103,7 @@ def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
     return TurnRunner(
         project_id=project_id, store=store, workflow=workflow,
         agents=agents, models=models, souls_dir=str(bot_data["souls_dir"]),
+        runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
     )
 
 

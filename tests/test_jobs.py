@@ -305,3 +305,55 @@ def test_summarizer_failure_does_not_fail_the_turn(monkeypatch, runner_with_summ
 
     assert outcome.failed is False
     assert outcome.response == "The PRD text."
+
+
+# ---- runtime_url: routing Hermes calls through runtime/server.py -----------
+
+
+def test_no_runtime_url_calls_hermes_run_in_process(monkeypatch, runner):
+    # runner.runtime_url is None by default -- confirm the in-process path
+    # runs at all (the other two tests below confirm the HTTP path is used
+    # *instead* when runtime_url is set, and that it alone runs, not both).
+    assert runner.runtime_url is None
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="direct call"))
+
+    outcome = runner.run_turn("Build a habit tracker.")
+
+    assert outcome.response == "direct call"
+
+
+def test_runtime_url_set_calls_the_http_client_instead(monkeypatch, runner):
+    runner.runtime_url = "http://agent-runtime:8000"
+    captured = {}
+
+    def fake_client_run(request, usage_file=None, base_url=None):
+        captured["base_url"] = base_url
+        captured["prompt"] = request.prompt
+        return HermesResult(
+            response="via http", usage={"failed": False, "session_id": "sess-1"},
+            exit_code=0, session_id="sess-1",
+        )
+
+    called_direct = []
+    monkeypatch.setattr(jobs_module, "runtime_client_run", fake_client_run)
+    monkeypatch.setattr(jobs_module, "hermes_run", lambda *a, **k: called_direct.append(1))
+
+    outcome = runner.run_turn("Build a habit tracker.")
+
+    assert outcome.response == "via http"
+    assert captured["base_url"] == "http://agent-runtime:8000"
+    assert called_direct == []  # the in-process path must not also run
+
+
+def test_runtime_client_error_becomes_a_runtime_error(monkeypatch, runner):
+    from runtime.client import RuntimeClientError
+
+    runner.runtime_url = "http://agent-runtime:8000"
+
+    def raise_client_error(request, usage_file=None, base_url=None):
+        raise RuntimeClientError("could not reach runtime server")
+
+    monkeypatch.setattr(jobs_module, "runtime_client_run", raise_client_error)
+
+    with pytest.raises(RuntimeError, match="runtime server call failed"):
+        runner.run_turn("Build a habit tracker.")

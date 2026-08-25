@@ -46,8 +46,12 @@ from .store import ProjectStore
 try:
     from runtime.hermes import HermesRequest, HermesResult
     from runtime.hermes import run as hermes_run
+    from runtime.client import RuntimeClientError
+    from runtime.client import run as runtime_client_run
 except ImportError:  # pragma: no cover - exercised only outside the repo root
     HermesRequest = HermesResult = hermes_run = None  # type: ignore[assignment]
+    RuntimeClientError = None  # type: ignore[assignment]
+    runtime_client_run = None  # type: ignore[assignment]
 
 
 class TurnBlocked(Exception):
@@ -86,6 +90,7 @@ class TurnRunner:
         souls_dir: str = "souls",
         estimator: TokenEstimator | None = None,
         session_policy: SessionPolicy | None = None,
+        runtime_url: str | None = None,
     ):
         self.project_id = project_id
         self.store = store
@@ -97,6 +102,12 @@ class TurnRunner:
         self.session_policy = session_policy or SessionPolicy()
         self.session_manager = SessionManager(self.session_policy)
         self.events = EventLog(store, project_id)
+        # None (the default) means "call runtime.hermes.run() in-process" --
+        # how every project has run so far, on a single host with no
+        # container networking. Set this (e.g. from AGENTIC_RUNTIME_URL) to
+        # route the same call through runtime/server.py over HTTP instead,
+        # for the real orchestrator/agent-runtime container split.
+        self.runtime_url = runtime_url
 
     # ---- turn id / bookkeeping -------------------------------------------
 
@@ -238,11 +249,6 @@ class TurnRunner:
         return builder.build(request, policy)
 
     def _invoke_hermes(self, *, package_prompt, route, role_cfg, decision, turn_id):
-        if hermes_run is None:
-            raise RuntimeError(
-                "runtime.hermes is not importable -- run from the repo root "
-                "or add it to sys.path"
-            )
         request = HermesRequest(
             prompt=package_prompt,
             home_dir=self.store.hermes_home(),
@@ -252,6 +258,23 @@ class TurnRunner:
             resume_session_id=decision.session_id if decision.resume else None,
         )
         usage_file = self.store.turn_dir(turn_id) / "usage.json" if not decision.resume else None
+
+        if self.runtime_url:
+            if runtime_client_run is None:
+                raise RuntimeError(
+                    "runtime.client is not importable -- run from the repo root "
+                    "or add it to sys.path"
+                )
+            try:
+                return runtime_client_run(request, usage_file=usage_file, base_url=self.runtime_url)
+            except RuntimeClientError as exc:
+                raise RuntimeError(f"runtime server call failed: {exc}") from exc
+
+        if hermes_run is None:
+            raise RuntimeError(
+                "runtime.hermes is not importable -- run from the repo root "
+                "or add it to sys.path"
+            )
         return hermes_run(request, usage_file=usage_file)
 
     def _record_decisions(self, response: str) -> None:

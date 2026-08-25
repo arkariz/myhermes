@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-233/233 tests pass. The test suite is the actual specification of the
+241/241 tests pass. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -83,13 +83,6 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 
 ## What's still a spec, not code
 
-- **`orchestrator/jobs.py` doesn't call `runtime/server.py` yet.** `TurnRunner`
-  still invokes `runtime.hermes.run()` as a direct in-process function call
-  — how Phase 1/2 were verified live without any Docker networking. Routing
-  it through the HTTP server instead (via an `httpx` client swapped in for
-  the current `hermes_run` import) is the next step toward the real
-  container topology; deliberately not done in the same pass that built the
-  server, since it touches every existing `hermes_run`-monkeypatch test.
 - An RTK output-compression wrapper (`runtime/rtk.py`).
   `docker/spike/Dockerfile` proves the base image works (Hermes CLI +
   OpenRouter installed and callable); the real agent-runtime Dockerfile
@@ -161,9 +154,26 @@ mapping path end to end, not just against a mock. 7 tests
 (`tests/test_server.py`) cover the same paths with `hermes_run` mocked for
 speed and repeatability.
 
-**Not yet done:** `orchestrator/jobs.py` calling this over HTTP instead of
-importing `runtime.hermes.run()` directly — see "What's still a spec"
-above for why that's a deliberately separate step.
+**`orchestrator/jobs.py` now calls this over HTTP when configured to.**
+`runtime/client.py`'s `run()` is the same contract as `runtime.hermes.run()`
+(same request shape, same `HermesResult`), just reachable over HTTP.
+`TurnRunner` takes an optional `runtime_url`; unset (the default), it
+calls `runtime.hermes.run()` in-process exactly as before — every prior
+live run stays reproducible with zero config. Set `AGENTIC_RUNTIME_URL`
+(read by both `orchestrator/cli.py` and `telegram_bot/handlers.py`) and
+every Hermes invocation routes through the HTTP server instead, no other
+code changes needed.
+
+Verified live end to end, across real process boundaries: started the real
+server, ran `orchestrator.cli project new` → `approve` → `turn` in a
+**separate CLI process** with `AGENTIC_RUNTIME_URL` pointing at it. The CLI
+process's `httpx` call reached the server process, which attempted a real
+(and here, absent) `hermes` launch, returned a real 502, which
+`runtime/client.py` turned into `RuntimeClientError`, which `jobs.py`
+re-raised as a `RuntimeError` that surfaced cleanly in the CLI's own
+traceback — the full chain, not simulated in one process. 5 more tests
+(`tests/test_runtime_client.py`) plus 3 in `test_jobs.py` cover the
+in-process/HTTP branch selection and error mapping with things mocked.
 
 ## Benchmark: does the context/session design actually help?
 

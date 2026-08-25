@@ -84,9 +84,9 @@ log (that's what git history is for).
       (re-run when the Hermes version bumps). Currently a one-time live
       run recorded in `docs/plan.md`, not a repeatable check.
 - [x] `POST /run` returning a parseable `usage.json` + `session_id` over
-      HTTP. `runtime/server.py`, verified live (real server, real HTTP
-      call, real 502 mapping when the `hermes` binary isn't present). Not
-      yet called *by* `orchestrator/jobs.py` — see below.
+      HTTP, and `orchestrator/jobs.py` actually calling it via
+      `runtime/client.py` when `AGENTIC_RUNTIME_URL` is set. Verified live
+      end to end, across real process boundaries — see below.
 - [ ] RTK compression ratio, measured (`flutter test` with/without the
       wrapper). RTK isn't integrated at all yet.
 - [ ] `DartAnalyzerIndexer` against a toy Flutter app. Not started.
@@ -143,12 +143,18 @@ work in Phase 1 already covers most of it:
 - [x] `runtime/server.py` — FastAPI HTTP wrapper around `runtime/hermes.py`,
       for the container-topology design where orchestrator and
       agent-runtime are separate containers. Verified live.
-- [ ] `orchestrator/jobs.py` still calls `runtime.hermes.run()` in-process,
-      not through `runtime/server.py` over HTTP — which is why Phase 1/2
-      could be verified live without Docker networking, and why the
-      container topology isn't real yet even though the HTTP boundary
-      exists. Needs an `httpx`-based client swapped in for the current
-      `hermes_run` import, touching every existing monkeypatch test.
+- [x] `runtime/client.py` + `orchestrator/jobs.py`'s `runtime_url` — routes
+      `TurnRunner`'s Hermes calls through the HTTP server instead of the
+      in-process function call, when `AGENTIC_RUNTIME_URL` is set (both
+      `cli.py` and `telegram_bot/handlers.py` read it). Unset by default,
+      so every prior live run stays reproducible with zero config change.
+      Verified live across real process boundaries (separate CLI and
+      server processes, real `httpx` call, real 502 propagated back as a
+      `RuntimeError`).
+- [ ] `compose.yaml` still doesn't exist, so this HTTP path has only been
+      exercised host-to-host (two local processes), never container-to-
+      container. The topology is real now; the Docker networking around it
+      isn't yet.
 - [ ] `runtime/rtk.py` — tool-output compression wrapper + ratio metrics.
 - [ ] `compose.yaml` — no container topology defined yet; everything
       verified live so far ran directly on the host or in the standalone

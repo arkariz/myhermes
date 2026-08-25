@@ -103,6 +103,10 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
         project_id=project_id, store=store, workflow=_load_workflow(),
         agents=_load_agents(), models=_load_models(),
         souls_dir=str(CONFIG_DIR / "souls"),
+        # Unset (the default) means runtime.hermes.run() in-process, same
+        # single-host behavior as every live run so far. Set this to route
+        # Hermes invocations through runtime/server.py over HTTP instead.
+        runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
     )
     return runner, store
 
