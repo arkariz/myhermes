@@ -318,6 +318,64 @@ async def test_process_turn_job_does_not_offer_approval_on_a_failed_turn(
     assert "[turn failed]" in kwargs["text"]
 
 
+# ---- message chunking (Telegram's 4096-char hard cap) -----------------------
+
+
+def test_split_for_telegram_leaves_a_short_message_alone():
+    assert handlers._split_for_telegram("short text") == ["short text"]
+
+
+def test_split_for_telegram_splits_on_paragraph_boundaries():
+    text = "\n\n".join(["para one", "para two", "x" * 3990])
+    chunks = handlers._split_for_telegram(text, limit=4000)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 4000 for c in chunks)
+    # nothing lost or reordered
+    assert "\n\n".join(c for c in chunks if c).count("para one") == 1
+    assert "para two" in "".join(chunks)
+    assert "x" * 3990 in "".join(chunks)
+
+
+def test_split_for_telegram_hard_slices_a_single_oversized_paragraph():
+    text = "y" * 9000  # one unbroken block, no paragraph breaks at all
+    chunks = handlers._split_for_telegram(text, limit=4000)
+
+    assert all(len(c) <= 4000 for c in chunks)
+    assert "".join(chunks) == text
+
+
+@pytest.mark.asyncio
+async def test_process_turn_job_sends_a_long_response_in_multiple_messages(
+    bot_data, tmp_path, monkeypatch,
+):
+    """Regression test: a real agent response tripped Telegram's real
+    `BadRequest: Message is too long` because nothing chunked it before
+    sending -- the actual turn output never reached the user, only the
+    generic "something went wrong" fallback did."""
+    _new_project(bot_data, tmp_path)
+    long_response = "\n\n".join(f"paragraph {i} " + "z" * 500 for i in range(20))
+    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes(response=long_response))
+    app = make_app(bot_data)
+    job = handlers.TurnJob(
+        project_id="toy", chat_id=100, thread_id=None,
+        human_message="Build a habit tracker.",
+    )
+
+    await handlers._process_turn_job(app, job)
+
+    calls = app.bot.send_message.await_args_list
+    assert len(calls) > 1
+    assert all(len(c.kwargs["text"]) <= handlers._TELEGRAM_MESSAGE_LIMIT for c in calls)
+    # the Approve button only appears once, on the last message
+    assert all(c.kwargs["reply_markup"] is None for c in calls[:-1])
+    assert calls[-1].kwargs["reply_markup"] is not None
+    # nothing was dropped
+    reassembled = "".join(c.kwargs["text"] for c in calls)
+    assert "paragraph 0 " in reassembled
+    assert "paragraph 19 " in reassembled
+
+
 @pytest.mark.asyncio
 async def test_inbox_worker_drains_the_queue_and_survives_a_failed_job(bot_data, tmp_path, monkeypatch):
     _new_project(bot_data, tmp_path)

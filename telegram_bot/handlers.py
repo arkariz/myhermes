@@ -274,6 +274,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Working on it...")
 
 
+# Telegram hard-caps a single message at 4096 characters and rejects the
+# whole send with `BadRequest: Message is too long` above it -- confirmed
+# live: a real agent response tripped this with nothing chunking it first,
+# silently dropping the actual turn output from the chat (only the outer
+# "Something went wrong" fallback in inbox_worker's except block reached
+# the user). 4000 is a safe margin under the real limit, not a measured
+# exact boundary.
+_TELEGRAM_MESSAGE_LIMIT = 4000
+
+
+def _split_for_telegram(text: str, limit: int = _TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split text into chunks Telegram will accept, preferring paragraph
+    boundaries (blank lines) so a split doesn't land mid-sentence. Falls
+    back to a hard slice for a single paragraph that alone exceeds the
+    limit (e.g. an unbroken code block or stack trace in the response).
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for paragraph in text.split("\n\n"):
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(paragraph) <= limit:
+            current = paragraph
+        else:
+            for i in range(0, len(paragraph), limit):
+                chunks.append(paragraph[i : i + limit])
+            current = ""
+    if current:
+        chunks.append(current)
+    return chunks or [text[:limit]]
+
+
 async def inbox_worker(app: Application) -> None:
     queue = app.bot_data["inbox"]
     while True:
@@ -333,10 +373,12 @@ async def _process_turn_job(app: Application, job: TurnJob) -> None:
     else:
         text = outcome.response
 
-    await app.bot.send_message(
-        chat_id=job.chat_id, message_thread_id=job.thread_id,
-        text=text, reply_markup=reply_markup,
-    )
+    chunks = _split_for_telegram(text)
+    for i, chunk in enumerate(chunks):
+        await app.bot.send_message(
+            chat_id=job.chat_id, message_thread_id=job.thread_id,
+            text=chunk, reply_markup=reply_markup if i == len(chunks) - 1 else None,
+        )
 
 
 # ---- approval callback ------------------------------------------------------
