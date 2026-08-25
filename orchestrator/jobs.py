@@ -256,7 +256,7 @@ class TurnRunner:
             # A raw file inventory is only useful to a role reading with its
             # own tools -- an assembled-mode role (planner, architect) has
             # no toolset to act on a bare path list with.
-            providers.append(IndexProvider(self.store))
+            providers.append(IndexProvider(self.store, project_source_root=self.project_source_root))
         builder = ContextBuilder(providers, self.estimator)
         policy = ContextPolicy(
             role=role, allowlist=role_cfg.allowlist, denylist=role_cfg.denylist,

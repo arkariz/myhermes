@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-276/276 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+287/287 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -81,22 +81,23 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
 | `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
-| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider`, wired into `TurnRunner` by default. Verified live |
+| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
+| `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Not wired into anything yet — nothing produces real tool output until Phase 6's `POST /exec` exists |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
-- Resolved (not just AST) Dart analysis, dependency expansion + relevance
-  ranking on top of `IndexProvider`, and a `GraphifyIndexer` for non-Dart
-  repos — see `docs/progress.md` Phase 4 for the split.
-- An RTK output-compression wrapper (`runtime/rtk.py`).
+- Resolved (not just AST) Dart analysis (`calls`/`instantiates` edges,
+  needs `flutter pub get` + a real `AnalysisContextCollection`), and a
+  `GraphifyIndexer` for non-Dart repos — see `docs/progress.md` Phase 4.
+- `runtime/rtk.py` exists and is tested against real subprocess output, but
+  isn't called by anything real yet — that's Phase 6's `POST /exec`.
 - Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
   Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
   needs to actually build a Flutter app.
-- Codebase intelligence (Dart indexer, Graphify adapter) — Phase 4.
 - A project-source volume — nothing built so far reads or writes a
-  project's actual code; that starts with Phase 4/5/6's guided-retrieval
-  toolsets.
+  project's actual code; that starts with Phase 5/6's guided-retrieval
+  toolsets doing real file I/O beyond the index.
 
 ## Phase 1 is done and verified live
 
@@ -273,14 +274,53 @@ real `manifest.yaml` listed `lib/app.dart` with
 `reason: present in the codebase index`. 13 more tests across
 `test_freshness.py`/`test_providers.py`/`test_jobs.py`.
 
-**Deliberately not built**, same reasoning as before: resolved analysis
-(`calls`/`instantiates` edges — the plan's slower primary mode; AST-only
-stays what exists here since nothing yet needs a resolved call graph),
-dependency expansion and relevance ranking (named in the same plan
-sentence as the file inventory `IndexProvider` ships — shipping the
-inventory first rather than half-building ranking on top of it), and a
-`GraphifyIndexer` for non-Dart repos (lower priority than the above for
-this project's actual Flutter/Dart scope).
+**Dependency expansion and relevance ranking now live in `IndexProvider`**
+too — the other two things named in the same plan sentence as the file
+inventory. Four priority tiers select from, lower wins when the budget is
+tight: 5 explicit reference (`ReferencedFilesProvider`) · 7 one-hop import
+of a referenced file · 8 a task keyword appears in the file's path · 9
+plain inventory. Expansion follows only the *referenced* files' own
+`imports` edges one hop — not a transitive closure over the whole graph,
+which would blur "expanded" into "everything." The Dart indexer records
+import edges by raw URI, not a resolved file, so resolution happens in
+`IndexProvider` itself: relative imports resolve by path math against the
+importing file's directory, `package:<name>/...` self-imports resolve via
+the project's own `pubspec.yaml` name. Relevance ranking is a plain
+keyword-in-path match against the task text — deterministic (same task
+text always ranks the same way, which reproducibility depends on), not an
+embedding call. **Verified live** against the real Dart CLI: a toy project
+where a referenced file had both a relative import and a self-package
+import — both resolved to real project files and were promoted to
+priority 7. 4 new tests in `tests/test_providers.py`.
+
+**Still deliberately not built**: resolved analysis (`calls`/`instantiates`
+edges — needs `flutter pub get` + a real `AnalysisContextCollection`; the
+plan's slower primary mode, AST-only stays what exists here since nothing
+yet needs a resolved call graph) and a `GraphifyIndexer` for non-Dart repos
+(lower priority than the above for this project's actual Flutter/Dart
+scope).
+
+## RTK: tool-output compression, ready but not wired in yet
+
+`runtime/rtk.py` implements the job the plan's "RTK (Rust Token Killer)"
+concept names — shrinking verbose tool output before it re-enters
+context — in Python rather than vendoring the external Rust binary the
+brief references. `compress()` strips ANSI escape codes, collapses runs of
+3+ consecutive identical lines to one line plus a repeat count (a stalled
+progress spinner or a lint warning repeated per file), and truncates a
+single unbroken block over 60 lines to its first/last 20. `run()` wraps a
+real subprocess — stdout and stderr merged before compression, since a
+build tool interleaves them meaningfully — and returns a *measured*
+`CompressionResult.ratio`, never an assumed one; the plan is explicit RTK
+should be dropped if it doesn't pay off, which only a real number can
+decide.
+
+**Not wired into anything yet, on purpose**: there is no toolchain in the
+system producing real tool output until Phase 6's `POST /exec`
+(RTK-wrapped `flutter test`/`analyze`/`build`) exists, so there's nothing
+to wrap end to end before then. 8 tests, including one against a real
+subprocess printing 500 identical lines (>90% measured reduction, not
+asserted from a fixture).
 
 ## Benchmark: does the context/session design actually help?
 

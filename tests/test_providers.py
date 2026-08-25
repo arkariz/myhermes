@@ -205,6 +205,78 @@ def test_index_provider_deduplicates_against_explicit_references(tmp_path):
     assert items == []
 
 
+def test_index_provider_expands_a_referenced_files_relative_import(tmp_path):
+    from indexing.freshness import save_graph
+    from indexing.port import IndexEdge, IndexNode, IndexResult
+
+    store = ProjectStore(tmp_path)
+    save_graph(store.index_dir(), IndexResult(
+        nodes=(
+            IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),
+            IndexNode(id="lib/models/b.dart", kind="file", name="lib/models/b.dart", file="lib/models/b.dart", line=0),
+            IndexNode(id="lib/c.dart", kind="file", name="lib/c.dart", file="lib/c.dart", line=0),
+        ),
+        edges=(
+            IndexEdge(src="lib/a.dart", dst="models/b.dart", relation="imports"),
+            IndexEdge(src="lib/a.dart", dst="dart:core", relation="imports"),
+        ),
+    ))
+
+    items = IndexProvider(store).collect(make_request(referenced_paths=("lib/a.dart",)))
+
+    expanded = [i for i in items if i.key == "lib/models/b.dart"]
+    assert len(expanded) == 1
+    assert expanded[0].reason == "imported by a referenced file"
+    assert expanded[0].priority == 7
+    # lib/c.dart is untouched -- it's neither referenced nor imported.
+    assert any(i.key == "lib/c.dart" and i.priority == 9 for i in items)
+
+
+def test_index_provider_resolves_a_self_package_import_via_pubspec(tmp_path):
+    from indexing.freshness import save_graph
+    from indexing.port import IndexEdge, IndexNode, IndexResult
+
+    (tmp_path / "pubspec.yaml").write_text("name: toy_app\nversion: 1.0.0\n", encoding="utf-8")
+
+    store = ProjectStore(tmp_path / ".agentic-dev")
+    save_graph(store.index_dir(), IndexResult(
+        nodes=(
+            IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),
+            IndexNode(id="lib/widgets/b.dart", kind="file", name="lib/widgets/b.dart", file="lib/widgets/b.dart", line=0),
+        ),
+        edges=(
+            IndexEdge(src="lib/a.dart", dst="package:toy_app/widgets/b.dart", relation="imports"),
+        ),
+    ))
+
+    items = IndexProvider(store, project_source_root=tmp_path).collect(
+        make_request(referenced_paths=("lib/a.dart",))
+    )
+
+    assert any(i.key == "lib/widgets/b.dart" and i.reason == "imported by a referenced file" for i in items)
+
+
+def test_index_provider_ranks_files_matching_a_task_keyword_above_the_rest(tmp_path):
+    from indexing.freshness import save_graph
+    from indexing.port import IndexNode, IndexResult
+
+    store = ProjectStore(tmp_path)
+    save_graph(store.index_dir(), IndexResult(
+        nodes=(
+            IndexNode(id="lib/checkout.dart", kind="file", name="lib/checkout.dart", file="lib/checkout.dart", line=0),
+            IndexNode(id="lib/unrelated.dart", kind="file", name="lib/unrelated.dart", file="lib/unrelated.dart", line=0),
+        ),
+        edges=(),
+    ))
+
+    items = IndexProvider(store).collect(make_request(task="Fix the checkout flow bug"))
+
+    by_key = {i.key: i for i in items}
+    assert by_key["lib/checkout.dart"].priority == 8
+    assert "checkout" in by_key["lib/checkout.dart"].reason
+    assert by_key["lib/unrelated.dart"].priority == 9
+
+
 # ---- ReferencedFilesProvider ------------------------------------------------
 
 

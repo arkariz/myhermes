@@ -12,6 +12,8 @@ when a turn actually runs.
 
 from __future__ import annotations
 
+import posixpath
+import re
 from pathlib import Path
 
 from ..store import ProjectStore
@@ -200,6 +202,47 @@ class ReferencedFilesProvider:
         ]
 
 
+_WORD_RE = re.compile(r"[a-zA-Z0-9]+")
+
+
+def _tokenize(text: str) -> set[str]:
+    return {w.lower() for w in _WORD_RE.findall(text)}
+
+
+def _pubspec_package_name(project_source_root: Path) -> str | None:
+    pubspec = project_source_root / "pubspec.yaml"
+    if not pubspec.exists():
+        return None
+    for line in pubspec.read_text(encoding="utf-8").splitlines():
+        if line.startswith("name:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def _resolve_import(src_file: str, uri: str, package_name: str | None) -> str | None:
+    """Map an import's raw URI to a project-relative file path, or None if
+    it doesn't resolve to one (an SDK import, or a different package).
+
+    The Dart indexer stores import edges by raw URI (`dst: uri`), not a
+    resolved file -- that resolution needs no type analysis, just path
+    math, so it's done here rather than promoted into "resolved analysis"
+    (which needs `flutter pub get` and a real `AnalysisContextCollection`
+    for `calls`/`instantiates` -- still deferred, see docs/progress.md).
+    """
+    if uri.startswith("dart:"):
+        return None
+    if uri.startswith("package:"):
+        if package_name is None:
+            return None
+        prefix = f"package:{package_name}/"
+        if not uri.startswith(prefix):
+            return None  # a dependency's own package, not this project's graph
+        return f"lib/{uri[len(prefix):]}"
+    # A relative import resolves against the importing file's own directory.
+    base_dir = posixpath.dirname(src_file)
+    return posixpath.normpath(posixpath.join(base_dir, uri))
+
+
 class IndexProvider:
     """The codebase index's file inventory (docs/plan.md Phase 4:
     "symbol+file retrieval ... as new context providers feeding
@@ -208,22 +251,45 @@ class IndexProvider:
 
     Handed over as references (content=None), same as ReferencedFiles --
     an inventory is where to look, not what to read; the agent reads with
-    its own tools, capped by request.read_budget. Priority 9 (lower than
-    ReferencedFilesProvider's 5): an explicit "read this file for this
-    task" beats "this file exists somewhere in the project" when the
-    budget is tight.
+    its own tools, capped by request.read_budget.
 
-    Dependency expansion (a referenced file's own imports) and relevance
-    ranking against the task -- both named in the same plan sentence -- are
-    deliberately not built here; this ships the inventory itself first
-    rather than half-building ranking on top of it. See docs/progress.md
-    Phase 4.
+    Three priority tiers, lower selected first when the budget is tight:
+      5  ReferencedFilesProvider  -- explicit "read this file for this task"
+      7  dependency expansion     -- imported by an explicitly referenced file
+      8  relevance match          -- a task keyword appears in the file's path
+      9  plain inventory          -- present in the index, nothing more known
+
+    Dependency expansion follows only the *referenced* files' own imports,
+    one hop -- not a transitive closure over the whole graph, which would
+    make "expanded" indistinguishable from "everything." Relevance ranking
+    is a plain keyword-in-path match, not embeddings or an LLM call: cheap,
+    deterministic (same task text always ranks the same way, which
+    reproducibility depends on), and good enough to break ties in a large
+    inventory without adding a dependency this project doesn't otherwise need.
     """
 
     name = "index"
 
-    def __init__(self, store: ProjectStore):
+    def __init__(self, store: ProjectStore, project_source_root: Path | str | None = None):
         self.store = store
+        self.project_source_root = Path(project_source_root) if project_source_root else None
+
+    def _expand_dependencies(self, graph, referenced_paths: tuple[str, ...], file_set: set[str]) -> list[str]:
+        package_name = (
+            _pubspec_package_name(self.project_source_root)
+            if self.project_source_root is not None else None
+        )
+        referenced_set = set(referenced_paths)
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for edge in graph.edges:
+            if edge.relation != "imports" or edge.src not in referenced_set:
+                continue
+            resolved = _resolve_import(edge.src, edge.dst, package_name)
+            if resolved and resolved in file_set and resolved not in seen:
+                seen.add(resolved)
+                expanded.append(resolved)
+        return expanded
 
     def collect(self, request: BuildRequest) -> list[ContextItem]:
         from indexing.freshness import load_graph  # local: only guided roles need this
@@ -233,12 +299,35 @@ class IndexProvider:
             return []
 
         files = sorted({n.file for n in graph.nodes if n.file})
-        already_referenced = set(request.referenced_paths)
-        return [
-            ContextItem(
-                key=f, layer=3, priority=9, volatility=4,
-                reason="present in the codebase index", content=None,
-            )
-            for f in files
-            if f not in already_referenced  # dedupe() would drop these anyway; skip the noise in the manifest
-        ]
+        file_set = set(files)
+        seen = set(request.referenced_paths)
+        task_tokens = _tokenize(request.task)
+
+        items: list[ContextItem] = []
+
+        for f in self._expand_dependencies(graph, request.referenced_paths, file_set):
+            if f in seen:
+                continue
+            seen.add(f)
+            items.append(ContextItem(
+                key=f, layer=3, priority=7, volatility=4,
+                reason="imported by a referenced file", content=None,
+            ))
+
+        for f in files:
+            if f in seen:
+                continue
+            seen.add(f)
+            matched = task_tokens & _tokenize(f)
+            if matched:
+                items.append(ContextItem(
+                    key=f, layer=3, priority=8, volatility=4,
+                    reason=f"present in the codebase index (matches task keyword {sorted(matched)[0]!r})",
+                    content=None,
+                ))
+            else:
+                items.append(ContextItem(
+                    key=f, layer=3, priority=9, volatility=4,
+                    reason="present in the codebase index", content=None,
+                ))
+        return items

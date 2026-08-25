@@ -114,7 +114,7 @@ work in Phase 1 already covers most of it:
       mocked (same reasoning as `test_store.py`: the property under test
       is git's own behavior).
 
-## Phase 4 — Codebase intelligence (core loop done; Dart/AST scope, not full)
+## Phase 4 — Codebase intelligence (core loop + retrieval done; Dart/AST scope, not full)
 
 - [x] `indexing/port.py` — the `CodebaseIndexer` protocol (`IndexNode`,
       `IndexEdge`, `IndexResult`).
@@ -171,12 +171,37 @@ work in Phase 1 already covers most of it:
       frames this as slower, with unresolved/AST-only as the fast
       fallback — here it's the primary mode instead, since nothing yet
       needs a resolved call graph.
-- [ ] Dependency expansion and relevance ranking — the other two things
-      named in the same plan sentence as "symbol+file retrieval."
-      `IndexProvider` ships the file inventory only; expanding a
-      referenced file to its own imports, or ranking the inventory against
-      the task text, are both deliberately not built rather than
-      half-built alongside it.
+- [x] Dependency expansion and relevance ranking — the other two things
+      named in the same plan sentence as "symbol+file retrieval." Both live
+      in `IndexProvider` now, as two more priority tiers above the plain
+      inventory (5 explicit reference · **7 one-hop import** ·
+      **8 keyword match** · 9 plain inventory):
+      - **Dependency expansion** follows only the *referenced* files' own
+        `imports` edges, one hop — not a transitive closure over the whole
+        graph, which would blur "expanded" into "everything." The Dart
+        indexer stores import edges by raw URI (`dst: uri`), not a
+        resolved file, so resolution happens here: relative imports
+        resolve by path math against the importing file's directory;
+        `package:<name>/...` self-imports resolve via the project's own
+        `pubspec.yaml` name. Neither needs type resolution — that's still
+        the deferred item below.
+      - **Relevance ranking** is a plain keyword-in-path match against the
+        task text, not embeddings or a second LLM call: cheap,
+        deterministic (same task text always ranks the same way — a
+        rebuild at the same source revision must still produce the same
+        manifest), and enough to break ties in a large inventory.
+      4 new tests (`tests/test_providers.py`), plus **verified live**
+      against the real Dart CLI: a toy project with a relative import
+      (`models/product.dart`) and a self-package import
+      (`package:toy_live/checkout.dart`) from a referenced file — both
+      resolved to real project files and were promoted to priority 7.
+- [ ] Resolved (not just AST) analysis — `calls`/`instantiates` edges,
+      which need `flutter pub get` to have run and a real
+      `AnalysisContextCollection`. Still deferred, unchanged from before:
+      the plan frames this as slower, with unresolved/AST-only as the fast
+      fallback — here it's the primary mode instead, since nothing yet
+      needs a resolved call graph. (Moved up from its old spot above the
+      now-done expansion/ranking item.)
 - [ ] `GraphifyIndexer` (non-Dart repos) — not started. Lower priority for
       this project's actual scope (Flutter/Dart) than the items above.
 
@@ -229,7 +254,21 @@ work in Phase 1 already covers most of it:
       full `orchestrator` → HTTP → `agent-runtime` → real `hermes`
       subprocess round trip (failed on "No LLM provider configured" since
       no API key was set on purpose, not on a missing binary).
-- [ ] `runtime/rtk.py` — tool-output compression wrapper + ratio metrics.
+- [x] `runtime/rtk.py` — tool-output compression + ratio metrics. Real RTK
+      is an external Rust binary this project doesn't vendor; this is a
+      Python implementation of the same job: strip ANSI codes, collapse
+      runs of ≥3 consecutive identical lines to one line plus a repeat
+      count, and truncate an unbroken block over 60 lines to its first/last
+      20. `run()` wraps a real subprocess (merged stdout+stderr, since a
+      build tool interleaves them meaningfully) and reports a *measured*
+      `CompressionResult.ratio`, never an assumed one — the plan is
+      explicit RTK should be dropped if it doesn't pay off, which only a
+      real number can decide. 8 tests, including one against a real
+      subprocess producing genuinely repetitive output (>90% reduction).
+      **Not wired into anything yet** — there is no real tool-output-
+      producing toolchain in the system until Phase 6's `POST /exec`
+      exists (`flutter test`/`analyze`/`build`), so there's nothing to
+      wrap end-to-end until then. Ships now so Phase 6 only has to call it.
 - [ ] No project-source volume in `compose.yaml` yet — nothing built so far
       reads or writes a project's actual code. Needed once Phase 4/5/6's
       guided-retrieval toolsets exist.
