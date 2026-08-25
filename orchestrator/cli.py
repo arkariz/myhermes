@@ -13,15 +13,19 @@ same TurnRunner, just from a different entry point.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .approvals import ApprovalError, PendingAction, resolve_command
+from telegram_bot.topics import ForumTopicError, create_forum_topic
+
+from .approval_flow import apply_approval
+from .approvals import ApprovalError
 from .config import AgentsConfig, ModelsConfig
 from .jobs import TurnBlocked, TurnRunner
 from .registry import ProjectRegistry
-from .state_machine import WorkflowDefinition
+from .state_machine import WorkflowDefinition, WorkflowError
 from .store import ProjectStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +67,33 @@ def cmd_project_new(args: argparse.Namespace) -> int:
     print(f"Created project {args.name!r} at state {workflow.initial!r}")
     print(f"  host_path:  {entry.host_path}")
     print(f"  state_path: {entry.state_path}")
+
+    _maybe_create_telegram_topic(reg, args.name)
     return 0
+
+
+def _maybe_create_telegram_topic(reg: ProjectRegistry, project_id: str) -> None:
+    """Auto-create and link a Telegram forum topic for this project.
+
+    Optional by design: with no home group configured, project creation
+    behaves exactly as before (manual `/link` in Telegram still works). This
+    never fails project creation -- a Telegram-side error here is reported
+    and swallowed, not raised, because the project itself was already
+    created successfully by the time this runs.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_FORUM_CHAT_ID")
+    if not token or not chat_id:
+        return
+
+    try:
+        thread_id = create_forum_topic(token, int(chat_id), project_id)
+    except ForumTopicError as exc:
+        print(f"  telegram: could not create a forum topic ({exc})", file=sys.stderr)
+        return
+
+    reg.link_telegram(project_id, chat_id=int(chat_id), thread_id=thread_id)
+    print(f"  telegram: created topic {project_id!r} (thread {thread_id}) and linked it")
 
 
 def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
@@ -94,43 +124,16 @@ def cmd_approve(args: argparse.Namespace) -> int:
     entry = _registry().get(args.project_id)
     store = ProjectStore(entry.state_path)
     workflow = _load_workflow()
-    state_data = store.read_state()
-    current = state_data.get("workflow_state", workflow.initial)
-    state = workflow.get(current)
+    current = store.read_state().get("workflow_state", workflow.initial)
 
-    pending = PendingAction(
-        type="approval" if state.requires_approval else "none",
-        approval_type=state.approval_type,
-        artifact=state.artifact,
-        artifact_revision=state_data.get("artifact_revision", 0),
-    )
     try:
-        result = resolve_command(
-            f"/approve {args.approval_type}", pending, approver="cli",
-            source_turn=None, now=datetime.now(timezone.utc).isoformat(),
+        next_state = apply_approval(
+            store, workflow, args.approval_type, approver="cli",
         )
-    except ApprovalError as exc:
+    except (ApprovalError, WorkflowError) as exc:
         print(f"REJECTED: {exc}", file=sys.stderr)
         return 1
 
-    if result["kind"] != "approval":
-        print("Not an approval.", file=sys.stderr)
-        return 1
-
-    next_state = workflow.advance(current, approval_type=args.approval_type)
-    store.update_state(
-        workflow_state=next_state,
-        attempts=0,
-        artifact_revision=state_data.get("artifact_revision", 0) + 1,
-        session=None,  # force a full rebuild in the new state
-    )
-    store.append_event({
-        "type": "APPROVAL_GRANTED",
-        "project_id": args.project_id,
-        "workflow_state": current,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "payload": {"approval_type": args.approval_type, "next_state": next_state},
-    })
     print(f"Approved. {current!r} -> {next_state!r}")
     return 0
 

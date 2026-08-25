@@ -23,3 +23,6 @@ workspace/*
 # Live-run secrets for the Hermes/OpenRouter spike (docker/spike/). The real
 # key lives only in .env.spike; .env.spike.example stays a blank template.
 docker/spike/secrets/.env.spike
+
+# Real Telegram bot token for the Phase 2 live smoke test. Never committed.
+secrets/.env.telegram

@@ -138,3 +138,58 @@ def test_approve_clears_the_session_forcing_a_rebuild_next_state(cli_env, monkey
 
     cli_module.main(["approve", "toy", "APPROVE_PRD"])
     assert store.read_state().get("session") is None
+
+
+# ---- Telegram forum-topic auto-creation on `project new` -------------------
+
+
+def test_project_new_without_telegram_env_skips_topic_creation(cli_env, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_FORUM_CHAT_ID", raising=False)
+    called = []
+    monkeypatch.setattr(cli_module, "create_forum_topic", lambda *a, **k: called.append(1) or 1)
+
+    cli_module.main(["project", "new", "toy", "--host-path", "p"])
+
+    assert called == []
+    entry = cli_module._registry().get("toy")
+    assert entry.telegram_chat_id is None
+
+
+def test_project_new_with_telegram_env_creates_and_links_topic(cli_env, monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setenv("TELEGRAM_FORUM_CHAT_ID", "555")
+    captured_args = {}
+
+    def fake_create(token, chat_id, name):
+        captured_args.update(token=token, chat_id=chat_id, name=name)
+        return 42
+
+    monkeypatch.setattr(cli_module, "create_forum_topic", fake_create)
+
+    cli_module.main(["project", "new", "toy", "--host-path", "p"])
+
+    assert captured_args == {"token": "fake-token", "chat_id": 555, "name": "toy"}
+    entry = cli_module._registry().get("toy")
+    assert entry.telegram_chat_id == 555
+    assert entry.telegram_thread_id == 42
+    assert "created topic 'toy'" in capsys.readouterr().out
+
+
+def test_project_new_reports_but_survives_a_telegram_failure(cli_env, monkeypatch, capsys):
+    from telegram_bot.topics import ForumTopicError
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setenv("TELEGRAM_FORUM_CHAT_ID", "555")
+
+    def fake_create(token, chat_id, name):
+        raise ForumTopicError("chat is not a forum")
+
+    monkeypatch.setattr(cli_module, "create_forum_topic", fake_create)
+
+    rc = cli_module.main(["project", "new", "toy", "--host-path", "p"])
+
+    assert rc == 0  # project creation itself must not fail
+    entry = cli_module._registry().get("toy")
+    assert entry.telegram_chat_id is None
+    assert "could not create a forum topic" in capsys.readouterr().err

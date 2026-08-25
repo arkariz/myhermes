@@ -359,7 +359,15 @@ agentic-dev/
 
 ## Phase 2 — Telegram (executable detail)
 
-- `telegram/bot.py` — `python-telegram-bot` v21, long-polling, in the orchestrator process (§24 permits this for MVP).
+> **Naming correction (found during implementation, not planned for here):**
+> `telegram/` collides with the installed `python-telegram-bot` package,
+> which imports as `telegram`. With the repo root on `sys.path`, a local
+> `telegram/` directory shadows it for every import in the process —
+> including the bot module's own `from telegram import ...`. The actual
+> package is `telegram_bot/`, same file names (`bot.py`, `routing.py`,
+> `handlers.py`) otherwise.
+
+- `telegram_bot/bot.py` — `python-telegram-bot` v22, long-polling, in the orchestrator process (§24 permits this for MVP).
 - `telegram/routing.py` — forum topic/thread ID → `project_id`, so the user never prefixes messages with a project name.
 - `telegram/handlers.py` — inline keyboards for Approve / Request Changes / Regenerate / View. `callback_data` is capped at 64 bytes, so it carries a short opaque id into a callback table, not an encoded payload.
 - **Strictly async:** a handler enqueues to the inbox and returns immediately; it must never hold a network request open while an agent runs for minutes. Pang solved this with `start_new_session=True` detachment; we use an inbox worker plus an outbox writer.

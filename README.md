@@ -18,7 +18,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-122/122 tests pass. The test suite is the actual specification of the
+208/208 tests pass. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -74,18 +74,18 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/registry.py` | `config/projects.yaml` — project name → host path / state path |
 | `orchestrator/jobs.py` | `TurnRunner` — one full turn, wired end to end, verified live |
 | `orchestrator/cli.py` | `project new` / `turn` / `approve` / `status`, verified live end to end |
+| `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
+| `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
+| `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
 - `runtime/server.py` (the FastAPI service wrapping `runtime/hermes.py` for
   the orchestrator to call over HTTP) and an RTK output-compression wrapper.
   `docker/spike/Dockerfile` proves the base image works (Hermes CLI +
-  OpenRouter installed and callable); the real `docker/agent-runtime/Dockerfile`
+  OpenRouter installed and callable); the real agent-runtime Dockerfile
   still needs Flutter/Android/JDK/RTK added on top of it.
-- `orchestrator/jobs.py` (Step 6 — async turn execution tying state machine +
-  context builder + `runtime/hermes.py` together, with attempt bounding).
-- `telegram/` (Phase 2).
-- `tools/dart_indexer/`, `indexing/graphify_adapter.py`.
+- Codebase intelligence (Dart indexer, Graphify adapter) — Phase 4.
 - `compose.yaml`.
 
 ## Phase 1 is done and verified live
@@ -140,8 +140,108 @@ two paths. The mock above proves what each design *sends*, which is what's
 under our control; a live run would additionally validate the provider's
 own accounting, at the cost of real API spend.
 
-## Next: Phase 2
+## Phase 2: Telegram
 
-Telegram (`telegram/bot.py`, `routing.py`, `handlers.py`) drives the same
-`TurnRunner` from a different entry point — inbox/outbox, inline-button
-approvals, async job dispatch so a multi-minute turn never blocks the bot.
+```bash
+export TELEGRAM_BOT_TOKEN=<from @BotFather>
+export TELEGRAM_FORUM_CHAT_ID=<optional -- for CLI-side auto-topic-creation>
+export TELEGRAM_DEFAULT_HOST_ROOT=<optional -- default: ~/agentic-dev-projects>
+python -m telegram_bot.bot
+```
+
+Named `telegram_bot/`, not `telegram/` — the plan's original name collides
+with the installed `python-telegram-bot` package, which imports as
+`telegram`. A local `telegram/` directory on `sys.path` would have shadowed
+it for every import in the process, including the bot's own
+`from telegram import ...`. Caught before it shipped, not after.
+
+`telegram_bot/bot.py` drives the exact same `TurnRunner` as the CLI, from a
+different entry point:
+
+- **`/create` — new project, new forum topic, both from inside Telegram.**
+  Send `/create` anywhere in a Topics-enabled supergroup (the bot needs
+  "Manage Topics" admin rights there); it asks for a name, then registers
+  the project (default host path via `TELEGRAM_DEFAULT_HOST_ROOT`, since a
+  chat message can't hand over a filesystem path the way `--host-path`
+  does), auto-clears a leading gate state if the workflow has one, creates
+  the topic via `telegram_bot/topics.py::create_forum_topic()` (plain
+  synchronous `httpx` against the Bot API — no event loop needed for one
+  REST call), links it, and posts a confirmation *inside the new topic*. A
+  Telegram-side failure (chat not a forum, bot not an admin) is reported
+  but never discards the project it already created.
+- **Same automation from the CLI.** Set `TELEGRAM_FORUM_CHAT_ID` alongside
+  `TELEGRAM_BOT_TOKEN` and `orchestrator/cli.py project new` does the same
+  create-topic-and-link step for a project made outside Telegram. Optional
+  either way: with neither env var set, project creation is unchanged.
+- `/link <project_id>` still works for manual linking (or for a topic
+  created by hand) — `telegram_bot/routing.py`, backed by the same
+  `ProjectRegistry.link_telegram()`. No project-name prefix needed on later
+  messages either way.
+- `/create`, `/link`, `/status` show up as Telegram's own autocomplete
+  suggestions when typing `/` — `telegram_bot/bot.py`'s `COMMANDS` list is
+  the single source for both `CommandHandler` registration and a
+  `setMyCommands` call in `post_init` (has to run there, not at build time:
+  it's an API call, needs the bot's event loop already up). Verified live
+  against `getMyCommands` directly, across every scope Telegram supports
+  (default, all_group_chats, per-chat, chat_administrators, ...) — only
+  `default` had anything, and it was exactly these three. If the menu looks
+  stale or shows commands from a bot token reused for something else
+  before, that's Telegram's own client-side cache, not the server state —
+  force-closing and reopening the app clears it.
+- Plain text enqueues a `TurnJob` and returns immediately; a single
+  background `inbox_worker` task drains the queue via `asyncio.to_thread`,
+  so a multi-minute Hermes call never blocks the bot's event loop or any
+  other chat. `ProjectStore` requires per-project write serialization
+  ("two writers to one project is a bug, not a case to merge") — one global
+  queue is a safe superset of that.
+- Every response in a state that requires approval gets an inline "Approve"
+  button. Clicking it goes through the same `apply_approval()` the CLI uses
+  (`orchestrator/approval_flow.py`, extracted so both entry points enforce
+  identical §31 semantics), via `resolve_callback()` — which is what makes
+  the plan's own acceptance test possible: **a button referencing a stale
+  artifact revision is rejected**, not silently approved against whatever
+  the project has moved on to.
+
+Tested with fakes for `Update`/`context` (`tests/test_telegram_handlers.py`,
+`tests/test_telegram_routing.py`) — no real Bot API or network call.
+
+### Verified live against a real bot and a real chat
+
+`docker/spike/telegram_live_test.py` runs the real bot (real long-polling
+against api.telegram.org, real `/link`, real inline button) with `hermes_run`
+mocked — Hermes itself was already verified live in Phase 1; the only new
+surface here is Telegram, so that's the only thing worth spending a real
+run on. `/link toy` → a plain-text message → a real click on the "Approve"
+button all went through, confirmed from `events.jsonl` afterward, not just
+from what Telegram showed on screen:
+
+```
+AGENT_TURN_STARTED  (discovery-01, kind: full)
+AGENT_TURN_COMPLETED
+SESSION_OPENED
+AGENT_TURN_STARTED  (discovery-03, kind: delta -- a real continuation turn)
+AGENT_TURN_COMPLETED
+APPROVAL_GRANTED    approver: "telegram:<the tester's real Telegram user id>"
+```
+
+`session: null` after the approval confirms boundary invalidation fired on
+the real Telegram path, not just in a unit test; the real Telegram user id
+in `approver` confirms the inline button's click genuinely round-tripped
+through `resolve_callback()`.
+
+**One real bug the live run found:** `httpx` (python-telegram-bot's HTTP
+client) logs the full request URL at `INFO`, and every Bot API URL embeds
+the token (`api.telegram.org/bot<TOKEN>/getMe`) — so `logging.basicConfig
+(level=logging.INFO)` alone leaks the token into any log output. Found the
+hard way on the first run. **Fixed** in both `telegram_bot/bot.py` and the
+live-test script: `logging.getLogger("httpx").setLevel(logging.WARNING)`
+right after configuring root logging, unconditionally.
+
+**`/create` verified live too**, same script, real Bot API: `/create` →
+typed a name in reply → a real forum topic appeared in the group, the
+project's `state.yaml` showed `workflow_state: discovery` (the leading
+`backlog` gate auto-cleared, `approver: "telegram:<real user id>"`), and a
+follow-up plain-text message plus an "Approve" click both went through
+inside the newly created topic — the whole loop, starting from a chat
+message and ending with a working, linked project, with no CLI step at
+all.
