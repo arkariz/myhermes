@@ -188,3 +188,57 @@ def test_exec_maps_a_missing_executable_to_502(tmp_path):
         "cwd": str(tmp_path),
     })
     assert response.status_code == 502
+
+
+# ---- /index (the container-topology indexing endpoint) ----------------------
+#
+# DartAnalyzerIndexer itself is monkeypatched here -- no real Dart CLI
+# needed to test this endpoint's request/response shape and error mapping.
+# The real DartAnalyzerIndexer has its own subprocess-mocked tests
+# (tests/test_dart_adapter.py) and was verified live separately.
+
+
+def test_index_rejects_a_project_with_no_pubspec(tmp_path):
+    response = client.post("/index", json={"project_root": str(tmp_path)})
+    assert response.status_code == 400
+    assert "pubspec.yaml" in response.json()["detail"]
+
+
+def test_index_returns_the_graph_for_a_real_dart_project(monkeypatch, tmp_path):
+    (tmp_path / "pubspec.yaml").write_text("name: toy\n", encoding="utf-8")
+
+    from indexing.port import IndexEdge, IndexNode, IndexResult
+
+    def fake_build(self, project_root, **kwargs):
+        assert project_root == tmp_path
+        return IndexResult(
+            nodes=(IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),),
+            edges=(IndexEdge(src="lib/a.dart", dst="dart:core", relation="imports"),),
+            warnings=("a warning",),
+        )
+
+    monkeypatch.setattr(server_module.DartAnalyzerIndexer, "build", fake_build)
+
+    response = client.post("/index", json={"project_root": str(tmp_path)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nodes"] == [{"id": "lib/a.dart", "kind": "file", "name": "lib/a.dart", "file": "lib/a.dart", "line": 0, "module": None, "lang": "dart"}]
+    assert body["edges"][0]["relation"] == "imports"
+    assert body["warnings"] == ["a warning"]
+
+
+def test_index_maps_a_dart_indexer_failure_to_502(monkeypatch, tmp_path):
+    (tmp_path / "pubspec.yaml").write_text("name: toy\n", encoding="utf-8")
+
+    from indexing.dart_adapter import DartIndexerError
+
+    def fake_build(self, project_root, **kwargs):
+        raise DartIndexerError("dart_indexer exited 1: boom")
+
+    monkeypatch.setattr(server_module.DartAnalyzerIndexer, "build", fake_build)
+
+    response = client.post("/index", json={"project_root": str(tmp_path)})
+
+    assert response.status_code == 502
+    assert "boom" in response.json()["detail"]

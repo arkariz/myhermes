@@ -53,5 +53,16 @@ RUN git config --global --add safe.directory /opt/flutter \
     && flutter config --no-analytics \
     && flutter --version
 
+# indexing/ + tools/dart_indexer/ -- runtime/server.py's POST /index route
+# needs both: the Python glue (DartAnalyzerIndexer) and the actual Dart CLI
+# it shells out to. `dart` here resolves via PATH to the SDK Flutter's own
+# precache just fetched (/opt/flutter/bin/dart), so no separate Dart
+# install is needed on top of the Flutter SDK above. `dart pub get` is a
+# one-time resolve at build time -- the same step the host-side README
+# instructions run manually for local/CLI mode.
+COPY indexing/ ./indexing/
+COPY tools/dart_indexer/ ./tools/dart_indexer/
+RUN cd tools/dart_indexer && dart pub get
+
 EXPOSE 8000
 CMD ["python3", "-m", "uvicorn", "runtime.server:app", "--host", "0.0.0.0", "--port", "8000"]

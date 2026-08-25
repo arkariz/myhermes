@@ -18,10 +18,21 @@
 #     runtime/hermes.py passes --provider/--model straight through to the
 #     hermes CLI, which talks to the provider directly. Adding a gateway
 #     service here would describe a capability that doesn't exist yet.
-#   * No project-source volume. Nothing built so far (Phase 1/2) reads or
-#     writes a project's actual source tree -- that starts with the
-#     builder/reviewer/qa roles' guided-retrieval toolsets (Phase 4/5/6),
-#     not before.
+#
+# Both services now mount a shared project-source volume at
+# /workspace/projects -- the path TELEGRAM_DEFAULT_HOST_ROOT and
+# orchestrator/cli.py's `--host-path` convention already assumed before
+# this volume actually existed. Without it: orchestrator's TurnRunner has
+# nowhere real inside its own container to point `project_source_root` at
+# (Phase 4/5's indexer/git-diff/DiffProvider all silently degrade to "no
+# project source" rather than error, so this gap was invisible until
+# someone actually tried a containerized run), and Hermes itself --
+# running inside agent-runtime with `toolsets: terminal` -- would have no
+# project files to read or write even if the orchestrator side worked.
+# Read-write on both sides: the context builder only *reads* source, but
+# the builder role's own file/terminal tools need to write it, and both
+# roles run inside the same agent-runtime process via Hermes, not two
+# different containers with different access levels.
 
 services:
   agent-runtime:
@@ -30,6 +41,7 @@ services:
       dockerfile: docker/agent-runtime/Dockerfile
     volumes:
       - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
+      - ${PROJECTS_DIR:-./data/projects}:/workspace/projects
     expose:
       - "8000"
     restart: unless-stopped
@@ -49,6 +61,7 @@ services:
     volumes:
       - ./config:/app/config
       - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
+      - ${PROJECTS_DIR:-./data/projects}:/workspace/projects
     restart: unless-stopped
 
 # One-off CLI commands don't need the bot running:

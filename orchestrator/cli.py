@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from indexing.dart_adapter import DartAnalyzerIndexer
+from indexing.remote import RemoteIndexer
 from telegram_bot.topics import ForumTopicError, create_forum_topic
 
 from .approval_flow import apply_approval
@@ -100,6 +101,7 @@ def _maybe_create_telegram_topic(reg: ProjectRegistry, project_id: str) -> None:
 def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
     entry = _registry().get(project_id)
     store = ProjectStore(entry.state_path)
+    runtime_url = os.environ.get("AGENTIC_RUNTIME_URL")
     runner = TurnRunner(
         project_id=project_id, store=store, workflow=_load_workflow(),
         agents=_load_agents(), models=_load_models(),
@@ -107,14 +109,18 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
         # Unset (the default) means runtime.hermes.run() in-process, same
         # single-host behavior as every live run so far. Set this to route
         # Hermes invocations through runtime/server.py over HTTP instead.
-        runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
-        # Always wired, never a hard requirement: DartAnalyzerIndexer.
+        runtime_url=runtime_url,
+        # Always wired, never a hard requirement: both indexers'
         # supports() returns False for a project with no pubspec.yaml, and
         # TurnRunner._current_index_revision() degrades to "no index" on
-        # any indexer failure -- a project that isn't Dart, or a host with
-        # no Dart SDK, behaves exactly as it did before Phase 4.
+        # any indexer failure -- a project that isn't Dart, or a host/
+        # container with no Dart SDK, behaves exactly as it did before
+        # Phase 4. RemoteIndexer over the same AGENTIC_RUNTIME_URL when
+        # it's set: the orchestrator container has no Dart SDK on purpose
+        # (the toolchain lives only in agent-runtime), so DartAnalyzerIndexer
+        # would fail to launch there -- see runtime/server.py's POST /index.
         project_source_root=entry.host_path,
-        indexer=DartAnalyzerIndexer(),
+        indexer=RemoteIndexer(base_url=runtime_url) if runtime_url else DartAnalyzerIndexer(),
     )
     return runner, store
 

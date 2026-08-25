@@ -34,6 +34,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes
 
 from indexing.dart_adapter import DartAnalyzerIndexer
+from indexing.remote import RemoteIndexer
 from orchestrator.approval_flow import apply_approval
 from orchestrator.approvals import ApprovalError
 from orchestrator.config import AgentsConfig, ModelsConfig
@@ -102,13 +103,16 @@ def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
     config_dir = _config_dir(bot_data)
     agents = AgentsConfig.load(config_dir / "agents.yaml")
     models = ModelsConfig.load(config_dir / "models.yaml")
+    runtime_url = os.environ.get("AGENTIC_RUNTIME_URL")
     return TurnRunner(
         project_id=project_id, store=store, workflow=workflow,
         agents=agents, models=models, souls_dir=str(bot_data["souls_dir"]),
-        runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
-        # Same "always wired, never required" reasoning as orchestrator/cli.py.
+        runtime_url=runtime_url,
+        # Same "always wired, never required" reasoning as orchestrator/cli.py,
+        # including RemoteIndexer over the same runtime_url when it's set --
+        # the orchestrator container has no Dart SDK on purpose.
         project_source_root=entry.host_path,
-        indexer=DartAnalyzerIndexer(),
+        indexer=RemoteIndexer(base_url=runtime_url) if runtime_url else DartAnalyzerIndexer(),
     )
 
 

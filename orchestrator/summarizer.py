@@ -33,8 +33,12 @@ from .store import ProjectStore
 try:
     from runtime.hermes import HermesRequest, HermesResult
     from runtime.hermes import run as hermes_run
+    from runtime.client import RuntimeClientError
+    from runtime.client import run as runtime_client_run
 except ImportError:  # pragma: no cover - exercised only outside the repo root
     HermesRequest = HermesResult = hermes_run = None  # type: ignore[assignment]
+    RuntimeClientError = None  # type: ignore[assignment]
+    runtime_client_run = None  # type: ignore[assignment]
 
 
 _PROMPT_TEMPLATE = """You maintain a running summary of one project's workflow state, for another AI agent that will read only this summary, never the full conversation.
@@ -81,10 +85,21 @@ def summarize(
     home_dir,
     provider: str,
     model: str,
+    runtime_url: str | None = None,
 ) -> SummarizeResult:
     """One cheap one-shot Hermes call -- never resumes a session. A summary
     call has no business inheriting another session's context, and its own
-    output is the only thing that needs to persist afterward."""
+    output is the only thing that needs to persist afterward.
+
+    `runtime_url` mirrors `jobs.py::TurnRunner._invoke_hermes()`: unset
+    (the default) calls `runtime.hermes.run()` in-process; set, routes
+    through `runtime/client.py` over HTTP instead. Needed for real, not
+    hypothetical -- the orchestrator container has no Hermes CLI at all
+    (deliberately; see docker/orchestrator/Dockerfile), and
+    `config/models.yaml` configures a `summarizer` route by default, so
+    every successful turn would otherwise crash here the first time this
+    ran inside that container.
+    """
     if hermes_run is None:
         raise RuntimeError(
             "runtime.hermes is not importable -- run from the repo root "
@@ -93,7 +108,22 @@ def summarize(
 
     prompt = build_prompt(previous_summary, human_message, agent_response)
     request = HermesRequest(prompt=prompt, home_dir=home_dir, provider=provider, model=model)
-    result = hermes_run(request)
+
+    if runtime_url:
+        if runtime_client_run is None:
+            raise RuntimeError(
+                "runtime.client is not importable -- run from the repo root "
+                "or add it to sys.path"
+            )
+        try:
+            result = runtime_client_run(request, base_url=runtime_url)
+        except RuntimeClientError:
+            # Best-effort per this module's contract: a failed summary call
+            # leaves the previous summary untouched, it never fails the turn.
+            return SummarizeResult(summary=previous_summary, failed=True)
+    else:
+        result = hermes_run(request)
+
     if result.failed:
         return SummarizeResult(summary=previous_summary, failed=True)
     return SummarizeResult(summary=result.response.strip(), failed=False)
@@ -106,6 +136,7 @@ def update_summary(
     *,
     human_message: str,
     agent_response: str,
+    runtime_url: str | None = None,
 ) -> SummarizeResult:
     """Read the running summary for `workflow_state`, fold in one new turn,
     and persist the result if the call succeeded."""
@@ -113,6 +144,7 @@ def update_summary(
     result = summarize(
         previous_summary=previous, human_message=human_message, agent_response=agent_response,
         home_dir=store.hermes_home(), provider=route.provider, model=route.model,
+        runtime_url=runtime_url,
     )
     if not result.failed:
         store.write_summary(workflow_state, result.summary)

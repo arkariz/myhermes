@@ -8,29 +8,29 @@ internal HTTP API, and the orchestrator calls it like any other service.
 
     uvicorn runtime.server:app --host 0.0.0.0 --port 8000
 
-Both containers mount the same `/workspace/agent-state` volume (rw), so a
-`home_dir` or `usage_file` path in a request is valid on both sides without
-needing to ship file contents over the wire -- only the path crosses the
-HTTP boundary, the same way it already crosses process boundaries when
+Both containers mount the same `/workspace/agent-state` and
+`/workspace/projects` volumes (rw), so a `home_dir`, `usage_file`, or
+`project_root` path in a request is valid on both sides without needing to
+ship file contents over the wire -- only the path crosses the HTTP
+boundary, the same way it already crosses process boundaries when
 `orchestrator/jobs.py` calls `runtime.hermes.run()` in-process today.
 
-Not yet wired into orchestrator/jobs.py -- TurnRunner still calls
-runtime.hermes.run() as a direct in-process function call, which is how
+`orchestrator/jobs.py`'s `TurnRunner` calls this over HTTP via
+`runtime/client.py` when `AGENTIC_RUNTIME_URL` is set -- unset (the
+default), it still calls `runtime.hermes.run()` in-process, which is how
 Phase 1/2 were verified live without needing Docker networking at all.
-Switching jobs.py to call this over HTTP (via an httpx client) instead is
-the next step toward the real container topology, not done here: that
-change touches every existing hermes_run-monkeypatch test, so it deserves
-its own pass rather than riding along with this one.
 """
 
 from __future__ import annotations
 
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from indexing.dart_adapter import DartAnalyzerIndexer, DartIndexerError
 from runtime import rtk
 from runtime.hermes import HermesInvocationError, HermesRequest
 from runtime.hermes import run as hermes_run
@@ -150,4 +150,45 @@ def exec_command(payload: ExecRequest) -> ExecResponse:
         original_bytes=result.compression.original_bytes,
         compressed_bytes=result.compression.compressed_bytes,
         ratio=result.compression.ratio,
+    )
+
+
+class IndexRequest(BaseModel):
+    project_root: str
+
+
+class IndexResponse(BaseModel):
+    nodes: list[dict]
+    edges: list[dict]
+    warnings: list[str]
+
+
+@app.post("/index", response_model=IndexResponse)
+def index(payload: IndexRequest) -> IndexResponse:
+    """Build a codebase index for `project_root` -- the endpoint the plan's
+    original container-topology diagram names (`POST /index`), for the
+    same reason `/run` and `/exec` exist: the Dart SDK lives only in
+    agent-runtime, deliberately not duplicated into the orchestrator
+    image, so indexing has to happen here when the two are separate
+    containers. `indexing/remote.py::RemoteIndexer` is the client side --
+    same `CodebaseIndexer` shape as `DartAnalyzerIndexer`, so
+    `TurnRunner`/`IndexProvider` don't know or care which one they're
+    holding.
+    """
+    project_root = Path(payload.project_root)
+    indexer = DartAnalyzerIndexer()
+    if not indexer.supports(project_root):
+        raise HTTPException(
+            status_code=400, detail=f"{project_root} is not a Dart/Flutter project (no pubspec.yaml)",
+        )
+
+    try:
+        result = indexer.build(project_root)
+    except DartIndexerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return IndexResponse(
+        nodes=[asdict(n) for n in result.nodes],
+        edges=[asdict(e) for e in result.edges],
+        warnings=list(result.warnings),
     )

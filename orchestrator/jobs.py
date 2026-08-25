@@ -328,6 +328,7 @@ class TurnRunner:
         result = summarizer.update_summary(
             self.store, workflow_state, route,
             human_message=human_message, agent_response=agent_response,
+            runtime_url=self.runtime_url,
         )
         if not result.failed:
             self.events.emit(

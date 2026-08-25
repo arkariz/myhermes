@@ -111,3 +111,68 @@ def test_update_summary_does_not_persist_on_failure(monkeypatch, tmp_path):
 
     assert result.failed is True
     assert store.read_summary("planning") == "Decided X."  # untouched
+
+
+# ---- runtime_url routing (container topology -- no Hermes CLI locally) -----
+
+
+def test_summarize_with_no_runtime_url_calls_hermes_run_in_process(monkeypatch, tmp_path):
+    called = {"direct": False, "client": False}
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: (
+        called.__setitem__("direct", True) or
+        HermesResult(response="ok", usage={"failed": False}, exit_code=0, session_id=None)
+    ))
+    monkeypatch.setattr(summarizer_module, "runtime_client_run", lambda request, base_url: (
+        called.__setitem__("client", True) or
+        HermesResult(response="via client", usage={"failed": False}, exit_code=0, session_id=None)
+    ))
+
+    result = summarize(
+        previous_summary="", human_message="hi", agent_response="hello",
+        home_dir=tmp_path, provider="openrouter", model="deepseek/deepseek-v3",
+    )
+
+    assert called == {"direct": True, "client": False}
+    assert result.summary == "ok"
+
+
+def test_summarize_with_a_runtime_url_calls_the_http_client_instead(monkeypatch, tmp_path):
+    called = {"direct": False, "client": False}
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: (
+        called.__setitem__("direct", True) or
+        HermesResult(response="ok", usage={"failed": False}, exit_code=0, session_id=None)
+    ))
+
+    def fake_client_run(request, base_url):
+        called["client"] = True
+        assert base_url == "http://agent-runtime:8000"
+        return HermesResult(response="via client", usage={"failed": False}, exit_code=0, session_id=None)
+
+    monkeypatch.setattr(summarizer_module, "runtime_client_run", fake_client_run)
+
+    result = summarize(
+        previous_summary="", human_message="hi", agent_response="hello",
+        home_dir=tmp_path, provider="openrouter", model="deepseek/deepseek-v3",
+        runtime_url="http://agent-runtime:8000",
+    )
+
+    assert called == {"direct": False, "client": True}
+    assert result.summary == "via client"
+
+
+def test_summarize_treats_a_runtime_client_error_as_a_best_effort_failure(monkeypatch, tmp_path):
+    from runtime.client import RuntimeClientError
+
+    def raise_client_error(request, base_url):
+        raise RuntimeClientError("could not reach runtime server")
+
+    monkeypatch.setattr(summarizer_module, "runtime_client_run", raise_client_error)
+
+    result = summarize(
+        previous_summary="Decided X.", human_message="hi", agent_response="hello",
+        home_dir=tmp_path, provider="openrouter", model="deepseek/deepseek-v3",
+        runtime_url="http://agent-runtime:8000",
+    )
+
+    assert result.failed is True
+    assert result.summary == "Decided X."

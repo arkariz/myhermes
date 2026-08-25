@@ -307,6 +307,40 @@ def test_summarizer_failure_does_not_fail_the_turn(monkeypatch, runner_with_summ
     assert outcome.response == "The PRD text."
 
 
+def test_runtime_url_reaches_the_summarizer_too(monkeypatch, runner_with_summarizer):
+    """The container-topology bug this guards against: the orchestrator
+    container has no Hermes CLI at all, so if TurnRunner's own runtime_url
+    didn't also reach summarizer.update_summary(), every successful turn
+    with a summarizer route configured (the default in config/models.yaml)
+    would crash there the first time it actually ran in that container."""
+    import orchestrator.summarizer as summarizer_module
+
+    captured = {}
+    runner_with_summarizer.runtime_url = "http://agent-runtime:8000"
+
+    monkeypatch.setattr(
+        jobs_module, "runtime_client_run",
+        lambda request, usage_file=None, base_url=None: HermesResult(
+            response="The PRD text.", usage={"failed": False, "session_id": "s1"},
+            exit_code=0, session_id="s1",
+        ),
+    )
+
+    def fake_client_run(request, base_url):
+        captured["base_url"] = base_url
+        return HermesResult(response="Summarized.", usage={"failed": False}, exit_code=0, session_id=None)
+
+    monkeypatch.setattr(summarizer_module, "runtime_client_run", fake_client_run)
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: (_ for _ in ()).throw(
+        AssertionError("summarizer should not call hermes_run in-process when runtime_url is set")
+    ))
+
+    runner_with_summarizer.run_turn("Build a habit tracker.")
+
+    assert captured["base_url"] == "http://agent-runtime:8000"
+    assert runner_with_summarizer.store.read_summary("planning") == "Summarized."
+
+
 # ---- runtime_url: routing Hermes calls through runtime/server.py -----------
 
 

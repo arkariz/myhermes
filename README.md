@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-313/313 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+324/324 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -59,6 +59,66 @@ doesn't reliably exist on that path.
 Provider-side prompt caching was confirmed working as designed (non-zero
 `cache_read_tokens`, growing turn over turn on a resumed session).
 
+## Running this for real
+
+Everything in this repo has been built and verified live — real Hermes
+CLI, real Dart CLI, real git, real Docker containers, real HTTP calls —
+except one thing nobody but you can supply: a real LLM API key. Every
+"turn failed" in this README's own verification runs is deliberate,
+because spending your money without asking isn't something this project
+does on its own behalf. What follows is what's actually left for you.
+
+**Required — nothing here runs a real turn without it:**
+- An API key for whichever provider `config/models.yaml` routes to
+  (defaults to OpenRouter — `OPENROUTER_API_KEY`). Every role's model can
+  be overridden per `.env.example`.
+
+**Optional — the CLI works without any of this; only Telegram needs it:**
+- A Telegram bot token (`TELEGRAM_BOT_TOKEN`, from @BotFather) and a group
+  with **topics/forum mode enabled**, so `/create` can auto-provision a
+  topic per project (`TELEGRAM_FORUM_CHAT_ID`).
+
+**Fastest path — CLI, no Docker, no Telegram:**
+```bash
+pip install -e ".[dev]"
+cp .env.example .env   # fill in OPENROUTER_API_KEY at minimum
+export $(grep -v '^#' .env | xargs)   # or use your own env-loading
+
+python -m orchestrator.cli project new toy --host-path /path/to/a/real/project
+python -m orchestrator.cli turn toy "Build a habit tracker for one user."
+python -m orchestrator.cli status toy
+```
+`--host-path` is the project's real source tree on your machine — point
+it at an existing Flutter/Dart project (or any git repo; the Dart indexer
+and diff-aware review just won't have anything Dart-specific to show for
+a non-Dart one). Everything from here is the same loop this whole README
+verified: context assembly, session resume, artifact versioning, the
+builder → review → qa cycle, all against your real project, with real
+model calls now that a real key is set.
+
+**Docker Compose path — the full container topology, plus Telegram:**
+```bash
+cp .env.example .env   # fill in OPENROUTER_API_KEY, and the Telegram vars if using it
+docker compose build
+docker compose up -d
+```
+Project source goes in `${PROJECTS_DIR:-./data/projects}` on the host —
+it's bind-mounted into both containers at `/workspace/projects`, so
+`--host-path /workspace/projects/<name>` (or `/create` from Telegram,
+which defaults there via `TELEGRAM_DEFAULT_HOST_ROOT`) is how a project
+gets a real body of code to work against. `docker compose logs -f
+orchestrator` is where turns, approvals, and any Telegram activity show up.
+
+**What you get either way**: the full state machine (discovery → planning
+→ product-design → architecture → implementation → review → qa →
+awaiting-merge), typed `/approve` gates, real git history for both
+`artifacts/` and your project's own source, a real Dart-aware codebase
+index once your project has a `pubspec.yaml`, and — if you configure a
+`summarizer` route (on by default) — continuity across session boundaries
+via a running summary. `orchestrator/cli.py status <project>` and the raw
+`agent-state/<project>/events.jsonl` are the two places to see what
+actually happened, at any point.
+
 ## What's implemented
 
 | Module | Covers |
@@ -88,6 +148,8 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
 | `config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
 | `docker/agent-runtime/Dockerfile` | Real Flutter SDK (`stable` channel, host-platform precache) on top of Hermes — `flutter create`/`pub get`/`analyze`/`test` verified live inside the built image and over a real `/exec` HTTP call |
+| `runtime/server.py::/index`, `indexing/remote.py::RemoteIndexer` | Codebase indexing over HTTP for the containerized topology — the orchestrator container has no Dart SDK on purpose, so `RemoteIndexer` calls agent-runtime's real Dart CLI instead of shelling out locally. Verified live |
+| `compose.yaml` project-source volume + orchestrator container fixes | Shared `/workspace/projects` volume, `git` added to the orchestrator image, `summarizer.py` routed through `runtime_url` — three real bugs found and fixed by actually running the compose stack. Verified live end to end |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
@@ -101,13 +163,19 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 - Android SDK + JDK in `docker/agent-runtime/Dockerfile` — `flutter build
   apk` needs both; `pub get`/`analyze`/`test` don't and already work.
   A genuinely large, separate download left for its own pass.
-- A project-source volume in `compose.yaml` — nothing built so far reads
-  or writes a project's actual code from *inside a container*; every live
-  verification so far has run against a host filesystem path. That starts
-  with Phase 6's toolchain actually needing to build inside agent-runtime.
 - Branch checkout in `project_git.py` — not built, and nothing in this
   system's workflow currently operates on more than the project's current
   branch/working tree, so there's no real caller for it yet.
+- The four Hermes spike measurements (`docs/plan.md` "Phase 1 spike") as
+  an automated regression suite, re-run when the Hermes version bumps —
+  currently a one-time recorded live run, not a repeatable check. Not
+  automated here on purpose: re-running it costs real LLM API spend, which
+  shouldn't happen without you choosing to spend it.
+- Everything above this point is code and infrastructure. What's left to
+  make it usable is entirely things only you can supply: an `OPENROUTER_API_KEY`
+  (or another provider Hermes supports), and — if you want the Telegram
+  interface rather than the CLI — a bot token and a group with topics
+  enabled. See "Running this for real," below.
 
 ## Phase 1 is done and verified live
 
@@ -204,30 +272,63 @@ docker compose run --rm orchestrator python -m orchestrator.cli project new toy 
 ```
 
 `compose.yaml` + `docker/agent-runtime/Dockerfile` (Hermes CLI + a real
-Flutter SDK, serves `runtime/server.py`) + `docker/orchestrator/Dockerfile` (state machine,
-context builder, Telegram bot — no Hermes CLI, no Docker socket). Smaller
-than the plan's original diagram, deliberately: no shared Hermes-profile
-volume (the plan names one; mounting it would reintroduce the exact
-cross-project memory leak the Phase 1 spike found and fixed — every
-request's `home_dir` already lives under the agent-state volume both
+Flutter SDK, serves `runtime/server.py`) + `docker/orchestrator/Dockerfile`
+(state machine, context builder, Telegram bot — no Hermes CLI, no Docker
+socket). Smaller than the plan's original diagram, deliberately: no shared
+Hermes-profile volume (the plan names one; mounting it would reintroduce
+the exact cross-project memory leak the Phase 1 spike found and fixed —
+every request's `home_dir` already lives under the agent-state volume both
 containers mount, so no separate profile volume is needed or safe), and no
 gateway service (never implemented; Hermes calls the provider directly).
 
-**Verified live**, real `docker compose build` + `up`, real containers:
-`agent-runtime`'s `/health` answered from inside its own container, and
-`hermes --version` confirmed the real CLI is there. Then, across the two
-real containers — `orchestrator` (via `docker compose run`) → HTTP →
-`agent-runtime` → a real `hermes` subprocess launch: the response was
-`"No LLM provider configured"` (no API key was set, deliberately, to avoid
-spend), not "binary not found" — proof the binary genuinely runs inside
-agent-runtime and the whole chain reaches it, with the failure bounded
-correctly (`attempts: 1`, not a crash) back through to the CLI.
+**Both containers now mount a shared project-source volume** at
+`/workspace/projects` (`${PROJECTS_DIR:-./data/projects}` on the host) —
+closing a gap that was invisible from host/CLI-mode testing alone. Closing
+it surfaced three real container-only bugs, found by actually running the
+compose stack rather than trusting that host-mode success implied
+container-mode success:
 
-One thing this caught live: MSYS/Git Bash's path-mangling (the same class
-of bug the Phase 1 spike hit with Docker volume args) also mangles a plain
-string argument like `--host-path /workspace/projects/toy` into a Windows
-path — `MSYS_NO_PATHCONV=1` is required before `docker compose run` on
-Git Bash, same fix as before, different call site.
+1. `orchestrator/cli.py` imports `indexing.dart_adapter` unconditionally,
+   but the orchestrator image never copied `indexing/` — `project new`
+   couldn't even start.
+2. Fixing that would still fail: `DartAnalyzerIndexer` shells out to a
+   local Dart CLI the orchestrator image doesn't have, by design (the
+   toolchain lives only in agent-runtime). Fixed properly, not papered
+   over — built the `POST /index` endpoint the plan's original diagram
+   names, backed by `indexing/remote.py::RemoteIndexer` (same
+   `CodebaseIndexer` shape as `DartAnalyzerIndexer`). `cli.py`/
+   `handlers.py` now pick `RemoteIndexer` over `DartAnalyzerIndexer`
+   based on `AGENTIC_RUNTIME_URL`, the same way they already pick between
+   `runtime.hermes.run()` and `runtime.client.run()`.
+3. The orchestrator's `python:3.12-slim` base had no `git` at all —
+   `artifact_versioning.py`, `project_git.py`, and
+   `indexing/freshness.py`'s `current_git_revision()` would all have
+   failed the moment any of them ran there. Added it.
+4. `orchestrator/summarizer.py` always called Hermes in-process with no
+   `runtime_url` support — since `config/models.yaml` configures a
+   `summarizer` route by default, every successful turn in the
+   orchestrator container would have crashed there. Given the same
+   `runtime_url` → `runtime/client.py` routing `jobs.py` already has.
+
+**Verified live, in full**: real `docker compose build` of both images; a
+real toy Flutter-shaped git project written into the shared volume;
+`RemoteIndexer` calling agent-runtime's real `/index` endpoint and getting
+back real nodes from the real Dart CLI; a real `TurnRunner.run_turn()`
+inside the orchestrator container against that project (only the main
+Hermes call mocked) with the builder's file write, `SOURCE_COMMITTED`, and
+a real `git-diff` manifest entry all working exactly as in host-mode
+testing; and finally, with *nothing* mocked, `python -m orchestrator.cli
+turn toy "..."` inside the real container producing a clean `"No LLM
+provider configured"` failure via a real HTTP round trip to agent-runtime's
+real `hermes` subprocess — proof the whole chain is wired correctly, with
+only a real API key missing.
+
+One thing this caught live, unrelated to the above: MSYS/Git Bash's
+path-mangling (the same class of bug the Phase 1 spike hit with Docker
+volume args) also mangles a plain string argument like `--host-path
+/workspace/projects/toy` into a Windows path — `MSYS_NO_PATHCONV=1` is
+required before `docker compose run` on Git Bash, same fix as before,
+different call site.
 
 ## Codebase intelligence: a real Dart indexer, wired in (Phase 4)
 

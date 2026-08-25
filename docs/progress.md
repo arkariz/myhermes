@@ -87,8 +87,13 @@ log (that's what git history is for).
       HTTP, and `orchestrator/jobs.py` actually calling it via
       `runtime/client.py` when `AGENTIC_RUNTIME_URL` is set. Verified live
       end to end, across real process boundaries — see below.
-- [ ] RTK compression ratio, measured (`flutter test` with/without the
-      wrapper). RTK isn't integrated at all yet.
+- [x] RTK compression ratio, measured — `runtime/rtk.py`'s own tests
+      measure it against real repetitive subprocess output (>90%,
+      99.66% via a real `POST /exec` call), and against real `flutter
+      pub get` output through the real endpoint (see Phase 6). Not yet
+      measured specifically on `flutter test` with/without the wrapper as
+      an A/B comparison on the same real command — the ratio is real, but
+      that specific side-by-side isn't done.
 - [x] `DartAnalyzerIndexer` against a toy Flutter-shaped app: a widget
       class node exists with correct file/line, and its `imports` edges
       are present. Verified live — see Phase 4 below.
@@ -155,11 +160,13 @@ work in Phase 1 already covers most of it:
       `state.yaml`, and feeds it to `SessionManager.decide()` — the
       `index_revision` boundary trigger is tested against a real indexer's
       output for the first time, not just a synthetic string. Wired by
-      default in both `orchestrator/cli.py` and
-      `telegram_bot/handlers.py` (`project_source_root=entry.host_path`,
-      `indexer=DartAnalyzerIndexer()`) — inert for a non-Dart project or a
-      host with no Dart SDK, since `supports()`/failures degrade to "no
-      index" rather than breaking the turn. **Verified live**: a real
+      default in both `orchestrator/cli.py` and `telegram_bot/handlers.py`
+      (`project_source_root=entry.host_path`, `indexer=DartAnalyzerIndexer()`
+      for host/CLI mode, or `RemoteIndexer(base_url=...)` over the same
+      `AGENTIC_RUNTIME_URL` when set — see the container-topology gap
+      below) — inert for a non-Dart project or a host with no Dart SDK,
+      since `supports()`/failures degrade to "no index" rather than
+      breaking the turn. **Verified live**: a real
       `TurnRunner`, a real toy Flutter-shaped git project, the real Dart
       CLI — `state.yaml`'s `index_revision` held the project's actual
       commit hash, and the turn's real `manifest.yaml` listed `lib/app.dart`
@@ -338,6 +345,56 @@ work in Phase 1 already covers most of it:
       producing toolchain in the system until Phase 6's `POST /exec`
       exists (`flutter test`/`analyze`/`build`), so there's nothing to
       wrap end-to-end until then. Ships now so Phase 6 only has to call it.
-- [ ] No project-source volume in `compose.yaml` yet — nothing built so far
-      reads or writes a project's actual code. Needed once Phase 4/5/6's
-      guided-retrieval toolsets exist.
+- [x] Project-source volume in `compose.yaml` — both `orchestrator` and
+      `agent-runtime` now mount `${PROJECTS_DIR:-./data/projects}` at
+      `/workspace/projects` (rw on both sides: the builder role's own
+      tools need to write it, not just read it). Closing this surfaced
+      three real container-topology bugs, none visible from host/CLI-mode
+      testing alone, all found and fixed by actually running the compose
+      stack rather than trusting that "it works on the host" implied "it
+      works in the container":
+      1. `orchestrator/cli.py` imports `indexing.dart_adapter` at module
+         level, but `docker/orchestrator/Dockerfile` never copied
+         `indexing/` — the orchestrator container couldn't even start
+         `project new`. Fixed by adding the `COPY`.
+      2. Even fixed, `DartAnalyzerIndexer` would have shelled out to a
+         local Dart CLI that doesn't exist in the orchestrator image (no
+         toolchain there, by design) and isn't copied there either. Fixed
+         properly rather than papered over: built the `POST /index`
+         endpoint the plan's original container diagram names
+         (`runtime/server.py`), backed by `indexing/remote.py::RemoteIndexer`
+         -- same `CodebaseIndexer` shape as `DartAnalyzerIndexer`, so
+         `TurnRunner`/`IndexProvider` don't know or care which one they
+         hold. `orchestrator/cli.py`/`telegram_bot/handlers.py` now pick
+         `RemoteIndexer` over `DartAnalyzerIndexer` based on whether
+         `AGENTIC_RUNTIME_URL` is set, exactly how they already pick
+         between `runtime.hermes.run()` and `runtime.client.run()`.
+      3. `docker/orchestrator/Dockerfile`'s base image (`python:3.12-slim`)
+         has no `git` at all -- meaning `artifact_versioning.py` (Phase 3),
+         `project_git.py` (Phase 5), and `indexing/freshness.py`'s own
+         `current_git_revision()` (Phase 4) would all have failed the
+         moment any of them ran inside that container. Added `git` to the
+         image.
+      4. `orchestrator/summarizer.py` always called Hermes in-process, with
+         no `runtime_url` support at all -- since `config/models.yaml`
+         configures a `summarizer` route by default, every successful turn
+         in the orchestrator container (which has no Hermes CLI, on
+         purpose) would have crashed there. Added the same
+         `runtime_url` → `runtime/client.py` routing `jobs.py`'s own
+         `_invoke_hermes()` already has.
+      12 new tests (`tests/test_remote_indexer.py`,
+      `tests/test_server.py`'s `/index` tests, `tests/test_summarizer.py`'s
+      and `tests/test_jobs.py`'s `runtime_url` tests). **Verified live, in
+      full**: real `docker compose build` of both images; a real toy
+      Flutter-shaped git project written directly into the shared volume;
+      `RemoteIndexer` on the orchestrator side calling agent-runtime's real
+      `/index` endpoint, which ran the real Dart CLI and returned real
+      nodes; a real `TurnRunner.run_turn()` inside the orchestrator
+      container against that project (`hermes_run` mocked for the main
+      call only) with the builder's file write, `SOURCE_COMMITTED`, and
+      `git-diff` manifest entry all working exactly as in host-mode
+      testing; and finally, with nothing mocked at all, `python -m
+      orchestrator.cli turn toy "..."` inside the real container producing
+      a clean `"No LLM provider configured"` failure via the real HTTP
+      round trip to agent-runtime's real `hermes` subprocess -- proof the
+      whole chain is wired correctly, with only a real API key missing.
