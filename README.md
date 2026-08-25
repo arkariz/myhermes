@@ -4,7 +4,8 @@ Local-first, Dockerized agentic engineering workspace — a redesign of
 [isfaaghyth/pang](https://github.com/isfaaghyth/pang) with a hybrid Hermes
 memory model, role-split context assembly, and a deterministic workflow
 engine. Full architecture and rationale: `docs/plan.md` (mirrors the approved
-planning-session output).
+planning-session output). What's actually done vs. still spec, phase by
+phase: `docs/progress.md`.
 
 ## Status
 
