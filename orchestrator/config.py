@@ -26,10 +26,19 @@ def resolve_env_placeholders(value: str) -> str:
 
     Plain yaml.safe_load leaves these as literal strings, so this is a
     small, deliberate second pass rather than a full templating engine.
+
+    An env var that is SET BUT EMPTY still falls back to `default`, not to
+    the empty string -- `env.get(var, default)` alone would return "" the
+    moment the key merely exists, which is exactly the failure mode Docker
+    Compose's own `${VAR:-}` substitution produces for anyone who left a
+    var unset in `.env` (present in the container as `VAR=`, not absent).
+    Found live: this was the reason compose.yaml had to duplicate every
+    role's default model a second time, just to avoid the empty string
+    silently winning over the real default.
     """
     def _sub(match: re.Match) -> str:
         var, _, default = match.groups()
-        return os.environ.get(var, default or "")
+        return os.environ.get(var) or (default or "")
     return _ENV_PLACEHOLDER.sub(_sub, value)
 
 

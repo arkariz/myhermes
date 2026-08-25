@@ -47,12 +47,18 @@ def cli_env(tmp_path, monkeypatch):
     (config_dir / "agents.yaml").write_text(AGENTS_YAML)
     (config_dir / "models.yaml").write_text(MODELS_YAML)
 
-    souls_dir = tmp_path / "souls"
+    # Regression: this used to write to tmp_path/"souls", but cli.py:108
+    # passes souls_dir=str(CONFIG_DIR / "souls") -- so no CLI test ever
+    # actually loaded a soul file, and every one still passed, because
+    # RoleSoulProvider degrades a missing soul to [] rather than raising.
+    souls_dir = config_dir / "souls"
     souls_dir.mkdir()
     (souls_dir / "planner.md").write_text("You are the planner.")
 
     monkeypatch.setattr(cli_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(cli_module, "REPO_ROOT", tmp_path)
+    # REPO_ROOT is read exactly once, at module-import time, to compute
+    # CONFIG_DIR -- patching it here after that has already happened does
+    # nothing. Not patched.
 
     return tmp_path
 

@@ -20,13 +20,6 @@ __pycache__/
 workspace/*
 !workspace/.gitkeep
 
-# Live-run secrets for the Hermes/OpenRouter spike (docker/spike/). The real
-# key lives only in .env.spike; .env.spike.example stays a blank template.
-docker/spike/secrets/.env.spike
-
-# Real Telegram bot token for the Phase 2 live smoke test. Never committed.
-secrets/.env.telegram
-
 # compose.yaml's default agent-state and project-source bind mounts --
 # generated project state, and a project's own real source, for every
 # project run through the container topology. Neither belongs in this

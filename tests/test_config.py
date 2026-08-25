@@ -28,6 +28,17 @@ def test_leaves_plain_strings_untouched():
     assert resolve_env_placeholders("openrouter") == "openrouter"
 
 
+def test_falls_back_to_default_when_env_var_is_set_but_empty(monkeypatch):
+    # Regression test: Docker Compose's own ${VAR:-} substitution sets an
+    # unset var to VAR= in the container -- present, empty, not absent.
+    # `os.environ.get(var, default)` alone returns "" the moment the key
+    # merely exists, silently overriding the real default. This was the
+    # reason compose.yaml had to duplicate every role's model a second
+    # time; the fix here retires that duplication.
+    monkeypatch.setenv("PLANNER_MODEL", "")
+    assert resolve_env_placeholders("${PLANNER_MODEL:-anthropic/claude-sonnet-4.6}") == "anthropic/claude-sonnet-4.6"
+
+
 # ---- AgentsConfig, against the real shipped file -----------------------
 
 

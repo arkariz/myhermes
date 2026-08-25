@@ -31,13 +31,27 @@ class RoleSoulProvider:
 
     name = "role_soul"
 
-    def __init__(self, souls_dir: Path | str = "souls"):
+    def __init__(self, souls_dir: Path | str):
         self.souls_dir = Path(souls_dir)
 
     def collect(self, request: BuildRequest) -> list[ContextItem]:
         path = self.souls_dir / f"{request.role}.md"
         if not path.exists():
-            return []
+            # A missing soul used to silently contribute nothing -- an
+            # agent with no persona/instructions for the turn, and no
+            # trace of that anywhere. Found live: exactly this happened
+            # for three roles at once (builder/reviewer/qa shipped before
+            # their souls did) and no test caught it, because a missing
+            # item looks identical to an item that was never a candidate.
+            # Returning a real, visible item instead means the gap shows
+            # up in manifest.yaml and in the rendered prompt itself.
+            return [ContextItem(
+                key=f"souls/{request.role}.md",
+                layer=1, priority=1, volatility=0,
+                reason=f"MISSING: no soul file at {path}",
+                content=f"(no soul file found for role {request.role!r} -- "
+                         f"proceed without role-specific instructions)",
+            )]
         return [ContextItem(
             key=f"souls/{request.role}.md",
             layer=1, priority=1, volatility=0,

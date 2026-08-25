@@ -98,7 +98,14 @@ class TurnRunner:
         workflow: WorkflowDefinition,
         agents: AgentsConfig,
         models: ModelsConfig,
-        souls_dir: str = "souls",
+        souls_dir: str,  # required, not defaulted -- a relative "souls" default
+                         # resolves against the CURRENT PROCESS's cwd, not any
+                         # project's own directory. A wrong value degrades
+                         # silently (RoleSoulProvider records the omission but
+                         # never raises), which is exactly how a soul went
+                         # unloaded in every CLI test until this was caught.
+                         # Every real caller and every test already passes
+                         # this explicitly; the default bought nothing but risk.
         estimator: TokenEstimator | None = None,
         session_policy: SessionPolicy | None = None,
         runtime_url: str | None = None,

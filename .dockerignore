@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+data/
+docs/
+tests/
+benchmark/
+tools/dart_indexer/.dart_tool/

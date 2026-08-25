@@ -42,9 +42,15 @@ def test_role_soul_provider_reads_the_matching_file(tmp_path):
     assert items[0].layer == 1 and items[0].volatility == 0
 
 
-def test_role_soul_provider_returns_nothing_for_a_missing_soul(tmp_path):
+def test_role_soul_provider_makes_a_missing_soul_visible_not_silent(tmp_path):
+    # Regression test: this used to return [] -- a missing soul
+    # contributed nothing and left no trace anywhere. builder/reviewer/qa
+    # shipped with no soul file for real, once, and nothing caught it.
     provider = RoleSoulProvider(souls_dir=tmp_path)
-    assert provider.collect(make_request(role="ghost-role")) == []
+    items = provider.collect(make_request(role="ghost-role"))
+    assert len(items) == 1
+    assert "MISSING" in items[0].reason
+    assert "ghost-role" in items[0].content
 
 
 # ---- ProjectIdentityProvider ------------------------------------------------
