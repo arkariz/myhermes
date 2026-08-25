@@ -250,7 +250,7 @@ work in Phase 1 already covers most of it:
       yet operates on more than the project's current branch/working tree
       (no multi-branch or PR-based flow exists to need it).
 
-## Phase 6 — Flutter toolchain (endpoint done; toolchain image not started)
+## Phase 6 — Flutter toolchain (endpoint + Flutter SDK done; Android/JDK not started)
 
 - [x] `POST /exec` (`runtime/server.py`) — runs a literal `argv` (no shell,
       so there's no string for a shell to reinterpret) in a given `cwd`
@@ -264,18 +264,35 @@ work in Phase 1 already covers most of it:
       subprocess reached over a real HTTP call from a separate process --
       500 repeated lines came back compressed to one, 99.66% measured
       reduction, matching `runtime/rtk.py`'s own live-verified ratio.
-- [ ] Not called by anything yet. No role's toolset currently routes a
-      terminal command through this endpoint instead of running inside
-      Hermes's own CLI sandbox -- that wiring, plus whatever `builder`'s
-      `toolsets: [terminal]` actually resolves to today, is unexplored.
-- [ ] `docker/agent-runtime/Dockerfile` still has no Flutter/Android
-      SDK/JDK on top of it -- it serves `runtime/server.py` with a real
-      Hermes CLI inside, verified live, but `flutter pub get/analyze/test/
-      build apk` have nothing to actually run against in that image yet.
-      Deliberately not started in this pass: it's a large, slow image
-      build (Flutter SDK plus a full Android SDK/JDK is multiple
-      gigabytes), independent of the code above, and worth doing as its
-      own deliberate step rather than folding into an unrelated commit.
+- [x] `docker/agent-runtime/Dockerfile` — added a real Flutter SDK: a
+      shallow clone of the `stable` channel to `/opt/flutter`, then
+      `flutter precache --no-android --no-ios` (host-platform engine
+      artifacts only, skipping the Android/iOS toolchains — see below).
+      Also fixed a real bug found while doing this: the image's `COPY`
+      never included `runtime/rtk.py`, so `runtime/server.py`'s new
+      `/exec` route (added in the same pass as the endpoint itself) would
+      have failed to import the moment this image was actually built —
+      caught here rather than at first real use. **Verified live, twice**:
+      first `docker run` a shell directly against the built image
+      (`flutter create` + `flutter pub get` + `flutter analyze` +
+      `flutter test` against a scratch project, all real — 0 analyzer
+      issues, the counter smoke test passed); then the full intended
+      path — a real HTTP `POST /exec` against a running container,
+      running real `flutter create` and `flutter pub get` over the wire,
+      RTK-compressed output round-tripping correctly.
+      **Found live**: the first build attempt failed outright --
+      `flutter precache` needs `unzip` to extract the Dart SDK, which
+      wasn't in the base image's package list; added it.
+- [ ] Android SDK + JDK -- not installed. Enough is in the image now for
+      `flutter pub get`/`analyze`/`test` against a project's own source
+      (verified above), but not `flutter build apk`, which needs both. A
+      genuinely large, separate download (multiple gigabytes) left for
+      its own pass rather than folded into this one.
+- [ ] Not called by anything yet from a real turn. No role's toolset
+      currently routes a terminal command through `/exec` instead of
+      running inside Hermes's own CLI sandbox -- that wiring, plus
+      whatever `builder`'s `toolsets: [terminal]` actually resolves to
+      today, is unexplored.
 
 ## Phase 7 — Optional infra
 

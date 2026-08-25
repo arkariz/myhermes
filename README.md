@@ -83,10 +83,11 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
 | `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
 | `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Verified live |
-| `runtime/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. The endpoint Phase 6 names for `flutter pub get/analyze/test/build`; not yet called by anything, and no toolchain exists in the image to run it against. Verified live over a real HTTP call to a real `uvicorn` subprocess |
+| `runtime/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. Verified live over real HTTP against both a bare `uvicorn` process and the real `agent-runtime` container, running actual `flutter create`/`pub get` |
 | `orchestrator/project_git.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
 | `orchestrator/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
 | `config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
+| `docker/agent-runtime/Dockerfile` | Real Flutter SDK (`stable` channel, host-platform precache) on top of Hermes — `flutter create`/`pub get`/`analyze`/`test` verified live inside the built image and over a real `/exec` HTTP call |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
@@ -97,9 +98,9 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 - No role's toolset yet routes a terminal command through `/exec` instead
   of Hermes's own CLI sandbox — the endpoint exists and is verified live,
   but nothing calls it end to end from a real turn.
-- Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
-  Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
-  needs to actually build a Flutter app.
+- Android SDK + JDK in `docker/agent-runtime/Dockerfile` — `flutter build
+  apk` needs both; `pub get`/`analyze`/`test` don't and already work.
+  A genuinely large, separate download left for its own pass.
 - A project-source volume in `compose.yaml` — nothing built so far reads
   or writes a project's actual code from *inside a container*; every live
   verification so far has run against a host filesystem path. That starts
@@ -202,8 +203,8 @@ docker compose run --rm orchestrator python -m orchestrator.cli project new toy 
   --host-path /workspace/projects/toy --state-path /workspace/agent-state/toy
 ```
 
-`compose.yaml` + `docker/agent-runtime/Dockerfile` (Hermes CLI, serves
-`runtime/server.py`) + `docker/orchestrator/Dockerfile` (state machine,
+`compose.yaml` + `docker/agent-runtime/Dockerfile` (Hermes CLI + a real
+Flutter SDK, serves `runtime/server.py`) + `docker/orchestrator/Dockerfile` (state machine,
 context builder, Telegram bot — no Hermes CLI, no Docker socket). Smaller
 than the plan's original diagram, deliberately: no shared Hermes-profile
 volume (the plan names one; mounting it would reintroduce the exact
@@ -378,18 +379,49 @@ measured ratio. Generic on purpose — the endpoint doesn't need to know
 which specific tool it's running, only how to run and compress *a*
 command, whether that ends up being `flutter`, `git`, or `rg`.
 
-**Verified live twice**: FastAPI's `TestClient` (in-process, 5 tests in
-`tests/test_server.py`), then a real `uvicorn` subprocess reached over an
-actual HTTP call from a separate Python process — 500 repeated lines came
-back compressed to one, 99.66% measured reduction, matching `rtk.py`'s own
-live-verified ratio.
+**Verified live three times now**: FastAPI's `TestClient` (in-process, 5
+tests in `tests/test_server.py`); a real `uvicorn` subprocess reached over
+an actual HTTP call from a separate Python process (500 repeated lines
+came back compressed to one, 99.66% measured reduction); and, once the
+Flutter SDK landed in `docker/agent-runtime/Dockerfile` (next section), a
+real `POST /exec` against the running container itself — actual `flutter
+create` and `flutter pub get` executed inside the container over the
+wire, RTK-compressed output round-tripping back correctly.
 
-**Not called by anything yet, on purpose**: no role's `terminal` toolset
-currently routes a command through this endpoint instead of running
-inside Hermes's own CLI sandbox, and `docker/agent-runtime/Dockerfile` has
-no Flutter/Android SDK/JDK on top of it yet for `/exec` to actually run
-against — a large, slow image build (multiple gigabytes) deliberately left
-for its own pass rather than folded in here.
+**Still not called by anything from a real turn, on purpose**: no role's
+`terminal` toolset currently routes a command through this endpoint
+instead of running inside Hermes's own CLI sandbox — that wiring is
+unexplored, separately from the endpoint and the toolchain both now
+existing and working.
+
+## Phase 6: a real Flutter SDK inside agent-runtime
+
+`docker/agent-runtime/Dockerfile` now clones the `stable` channel to
+`/opt/flutter` and runs `flutter precache --no-android --no-ios` — engine
+artifacts for the host platform only, deliberately skipping the Android
+and iOS toolchains (see below). Found and fixed along the way: the first
+build attempt failed outright because `flutter precache` needs `unzip` to
+extract the Dart SDK, which wasn't in the base image's package list.
+
+Also caught here: the image's `COPY` for `runtime/` never included
+`runtime/rtk.py`, so the `/exec` route added in the previous pass would
+have failed to import the moment this image was actually built — a gap
+between "the endpoint's tests pass" and "the endpoint works in the image
+that's supposed to serve it," closed before it could surprise anyone.
+
+**Verified live twice**: first a plain `docker run` shell directly against
+the built image — real `flutter create`, `flutter pub get`, `flutter
+analyze` (0 issues), and `flutter test` (the counter smoke test passed)
+against a scratch project, all inside the container, no mocking anywhere
+in that chain. Then the actual intended path end to end: a running
+container, a real HTTP `POST /exec` call from outside it, real `flutter
+create`/`pub get` executed inside, RTK-compressed output coming back
+correctly over the wire.
+
+**Deliberately not done**: Android SDK + JDK. `pub get`/`analyze`/`test`
+don't need them and now work; `flutter build apk` does need both, and
+installing them is a separate, genuinely large download (multiple
+gigabytes) left for its own pass rather than folded into this one.
 
 ## Benchmark: does the context/session design actually help?
 

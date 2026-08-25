@@ -1,12 +1,16 @@
-# agent-runtime -- the only container with the Hermes CLI and (eventually)
-# the Flutter/Android/JDK/RTK toolchain. Exposes runtime/server.py's
-# POST /run over HTTP; the orchestrator container talks to it, never
-# `docker exec`s into it (it has no Docker socket -- least privilege).
+# agent-runtime -- the only container with the Hermes CLI and the Flutter
+# toolchain. Exposes runtime/server.py's POST /run and POST /exec over
+# HTTP; the orchestrator container talks to it, never `docker exec`s into
+# it (it has no Docker socket -- least privilege).
 #
-# Deliberately Hermes-only, not the full Flutter toolchain yet (Phase 6).
 # This is docker/spike/Dockerfile's base, promoted from a throwaway spike
 # image to the real service: same Hermes install, now serving runtime/
 # instead of a bash shell.
+#
+# Has a real Flutter SDK (stable channel), verified live to run
+# `flutter create`/`pub get`/`analyze`/`test`. Deliberately no Android
+# SDK/JDK yet -- `flutter build apk` needs both, and installing them is a
+# separate, genuinely large download left for its own pass.
 #
 # Note what's NOT here: no shared Hermes profile volume. HERMES_HOME is set
 # per-request from the caller's `home_dir` (runtime/hermes.py::build_env),
@@ -21,7 +25,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git jq ripgrep bash xz-utils libatomic1 \
-        python3 python3-pip \
+        python3 python3-pip unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Hermes's own installer pulls its managed Python 3.11, Node.js, ffmpeg.
@@ -33,8 +37,21 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ENV PATH="/root/.local/bin:/root/.hermes/bin:${PATH}"
 
 WORKDIR /app
-COPY runtime/hermes.py runtime/server.py runtime/__init__.py ./runtime/
+COPY runtime/hermes.py runtime/server.py runtime/rtk.py runtime/__init__.py ./runtime/
 RUN pip install --break-system-packages --no-cache-dir fastapi uvicorn httpx
+
+# Flutter SDK (Phase 6, first slice): enough for `flutter pub get`,
+# `flutter analyze`, `flutter test` against a project's own source --
+# NOT the Android SDK/JDK that `flutter build apk` additionally needs
+# (a genuinely large, separate download, left for its own pass). A shallow
+# clone of the stable channel plus `flutter precache` for the host platform
+# is the same install path `flutter doctor` recommends outside Docker.
+RUN git clone https://github.com/flutter/flutter.git -b stable --depth 1 /opt/flutter
+ENV PATH="/opt/flutter/bin:${PATH}"
+RUN git config --global --add safe.directory /opt/flutter \
+    && flutter precache --no-android --no-ios \
+    && flutter config --no-analytics \
+    && flutter --version
 
 EXPOSE 8000
 CMD ["python3", "-m", "uvicorn", "runtime.server:app", "--host", "0.0.0.0", "--port", "8000"]
