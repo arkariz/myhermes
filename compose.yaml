@@ -39,6 +39,16 @@ services:
     build:
       context: .
       dockerfile: docker/agent-runtime/Dockerfile
+    environment:
+      # The real `hermes` subprocess launches IN THIS container (POST
+      # /run), not in orchestrator -- runtime/hermes.py::build_env()
+      # inherits its own process's os.environ, which is agent-runtime's,
+      # not orchestrator's. Without this, every turn fails with Hermes's
+      # own "No LLM provider configured" (a clean failure, not a crash,
+      # so it looked identical to the deliberate no-key verification runs
+      # done earlier -- only caught once a real key was actually set and
+      # a turn still failed the same way).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
       - ${PROJECTS_DIR:-./data/projects}:/workspace/projects
