@@ -1,0 +1,19 @@
+name: dart_indexer
+description: >
+  Syntactic Dart/Flutter codebase indexer for Agentic Dev's context
+  providers (docs/plan.md's DartAnalyzerIndexer). AST-only, no resolved
+  type analysis -- doesn't require `flutter pub get` to have run first,
+  which is what makes it fast enough to run per turn rather than once at
+  project setup.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  analyzer: ^7.0.0
+  path: ^1.9.0
+
+dev_dependencies:
+  test: ^1.24.0

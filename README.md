@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-253/253 tests pass. The test suite is the actual specification of the
+262/262 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -81,10 +81,16 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
 | `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
+| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` — a real `package:analyzer`-based Dart CLI, called from Python via subprocess. Verified live |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
+- Wiring the Dart indexer into `TurnRunner`/context providers (no
+  `IndexProvider`, no `index_revision` ever set in `state.yaml` yet),
+  resolved (not just AST) analysis for `calls`/`instantiates` edges, a
+  `GraphifyIndexer` for non-Dart repos, and freshness/incremental
+  indexing by git commit — see `docs/progress.md` Phase 4 for the split.
 - An RTK output-compression wrapper (`runtime/rtk.py`).
 - Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
   Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
@@ -213,6 +219,50 @@ of bug the Phase 1 spike hit with Docker volume args) also mangles a plain
 string argument like `--host-path /workspace/projects/toy` into a Windows
 path — `MSYS_NO_PATHCONV=1` is required before `docker compose run` on
 Git Bash, same fix as before, different call site.
+
+## Codebase intelligence: a real Dart indexer (Phase 4, started)
+
+```bash
+cd tools/dart_indexer && dart pub get   # once
+dart run bin/dart_indexer.dart /path/to/a/flutter/project
+```
+
+`tools/dart_indexer/` is a real Dart CLI built on `package:analyzer` — the
+same engine the Dart LSP uses — walking `lib/`/`test/` and emitting a
+normalized `{nodes, edges}` graph: files, classes, widgets (detected by
+superclass name — `StatelessWidget`/`StatefulWidget`/`State`), mixins,
+enums, extensions, top-level functions, and methods nested under their
+class; edges for `imports`, `declares`, `extends`, `implements`, `with`.
+AST-only, not resolved analysis — no `flutter pub get` required on the
+*target* project first, which is what makes it fast enough to consider
+running more than once at setup. `indexing/dart_adapter.py` calls it via
+subprocess and normalizes the JSON into `indexing/port.py`'s
+`IndexNode`/`IndexEdge` (the `CodebaseIndexer` protocol the plan
+describes, so a future `GraphifyIndexer` for non-Dart repos plugs into the
+same shape).
+
+Verified live twice, not just unit-tested: the Dart CLI directly against a
+toy Flutter-shaped file — correct widget/enum/mixin/function
+classification, correct line numbers, import edges present — then the
+Python adapter calling that same CLI as a real subprocess end to end.
+**Found live:** on Windows, `subprocess.run` needs `dart.bat`, not the
+extension-less `dart` shim (`CreateProcess` can't exec it directly —
+`"%1 is not a valid Win32 application"` — even though a shell invocation
+of bare `dart` resolves it fine via `PATHEXT`); set `DART_EXECUTABLE` to
+the `.bat` on Windows. 10 Dart tests (`tools/dart_indexer/test/`) + 9
+Python tests (`tests/test_dart_adapter.py`, subprocess mocked).
+
+**Not yet wired into `TurnRunner`.** No `IndexProvider` exists to feed a
+graph into context building, and nothing ever sets `index_revision` in
+`state.yaml` — a field `SessionManager.decide()` already reads and
+compares (part of the original 8 boundary triggers), tested against a
+synthetic value but never against output from a real indexer until now.
+Also not built: resolved analysis (`calls`/`instantiates` edges, which
+need `flutter pub get` and a real `AnalysisContextCollection` — the plan
+frames this as the slower primary mode with AST-only as a fast fallback;
+here AST-only is what exists, since nothing yet needs a resolved call
+graph), a `GraphifyIndexer`, and freshness/incremental indexing by git
+commit.
 
 ## Benchmark: does the context/session design actually help?
 

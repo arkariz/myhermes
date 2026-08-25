@@ -89,7 +89,9 @@ log (that's what git history is for).
       end to end, across real process boundaries — see below.
 - [ ] RTK compression ratio, measured (`flutter test` with/without the
       wrapper). RTK isn't integrated at all yet.
-- [ ] `DartAnalyzerIndexer` against a toy Flutter app. Not started.
+- [x] `DartAnalyzerIndexer` against a toy Flutter-shaped app: a widget
+      class node exists with correct file/line, and its `imports` edges
+      are present. Verified live — see Phase 4 below.
 
 ## Phase 3 — Product workflow (done, ahead of schedule)
 
@@ -112,13 +114,45 @@ work in Phase 1 already covers most of it:
       mocked (same reasoning as `test_store.py`: the property under test
       is git's own behavior).
 
-## Phase 4 — Codebase intelligence
+## Phase 4 — Codebase intelligence (started)
 
-- [ ] Not started. `indexing/port.py` (the `CodebaseIndexer` protocol),
-      `DartAnalyzerIndexer`, `GraphifyIndexer`, freshness/incremental
-      indexing by git commit — none of it exists yet. `builder`/`reviewer`/
-      `qa` roles are configured for guided context mode in `agents.yaml`
-      but have no index to guide retrieval with.
+- [x] `indexing/port.py` — the `CodebaseIndexer` protocol (`IndexNode`,
+      `IndexEdge`, `IndexResult`).
+- [x] `DartAnalyzerIndexer` (`indexing/dart_adapter.py`) — shells out to a
+      real Dart CLI, `tools/dart_indexer/`, built on `package:analyzer`
+      (the same engine the Dart LSP uses). AST-only, not resolved
+      analysis: no `flutter pub get` required first, which is what makes
+      it fast enough to consider running per turn rather than once at
+      setup. Detects files, classes, widgets (by superclass name —
+      `StatelessWidget`/`StatefulWidget`/`State`), mixins, enums,
+      extensions, top-level functions, and methods nested under their
+      class; edges for `imports`, `declares`, `extends`, `implements`,
+      `with`. 10 Dart-side tests (`tools/dart_indexer/test/`) + 9
+      Python-side tests (`tests/test_dart_adapter.py`, subprocess mocked).
+      Verified live twice: the Dart CLI directly against a toy
+      Flutter-shaped file (correct widget/enum/mixin/function
+      classification, correct line numbers), and the Python adapter
+      calling that same CLI as a real subprocess and normalizing its JSON
+      into `IndexNode`/`IndexEdge`. Found live: on Windows, `subprocess.run`
+      needs `dart.bat`, not the extension-less `dart` shim
+      (`DART_EXECUTABLE` env var), documented in `dart_adapter.py`.
+- [ ] Resolved (not just AST) analysis — `calls`/`instantiates` edges,
+      which need `flutter pub get` to have run and a real
+      `AnalysisContextCollection`. Deliberately deferred: the plan itself
+      frames this as slower, with unresolved/AST-only as the fast
+      fallback — here it's the primary mode instead, since nothing yet
+      needs a resolved call graph.
+- [ ] Not wired into `TurnRunner`/context providers yet. No `IndexProvider`
+      exists, and nothing sets `index_revision` in `state.yaml` (the field
+      `SessionManager.decide()` already reads and compares — untested
+      against a real index because there was never a real one to compare
+      until now).
+- [ ] `GraphifyIndexer` (non-Dart repos) — not started.
+- [ ] Freshness/incremental indexing by git commit
+      (`metadata.yaml: {tool, version, source_revision, generated_at}`,
+      `git diff --name-only` for incremental rebuilds) — not started.
+      `builder`/`reviewer`/`qa` are configured for guided context mode in
+      `agents.yaml` but still have no index to guide retrieval with.
 
 ## Phase 5 — Engineering workflow (partially done, ahead of schedule)
 
