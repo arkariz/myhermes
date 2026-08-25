@@ -205,7 +205,7 @@ work in Phase 1 already covers most of it:
 - [ ] `GraphifyIndexer` (non-Dart repos) — not started. Lower priority for
       this project's actual scope (Flutter/Dart) than the items above.
 
-## Phase 5 — Engineering workflow (partially done, ahead of schedule)
+## Phase 5 — Engineering workflow (core loop + diff-aware context done)
 
 - [x] `builder` / `reviewer` / `qa` roles configured (guided context mode,
       read budgets, denylists) in `config/agents.yaml`.
@@ -213,10 +213,42 @@ work in Phase 1 already covers most of it:
 - [x] Retry → `blocked` on exhausted `max_attempts` (autonomous states).
 - [x] `implementation → review → qa`, with `on_reject: implementation`
       already in `workflow.yaml`.
-- [ ] Diff-aware reviewer context (needs git integration — reading an
-      actual diff — which doesn't exist yet).
-- [ ] Real git integration generally (checking out branches, reading
-      diffs, committing builder output).
+- [x] `config/souls/{builder,reviewer,qa}.md` — found missing while
+      finishing this phase: three of `workflow.yaml`'s seven agent-running
+      roles had been configured in `agents.yaml` with no persona file to
+      match, which `RoleSoulProvider` degrades from silently (an empty
+      contribution, not an error), so the gap had gone unnoticed. A new
+      regression test, `tests/test_souls.py`, asserts every
+      agent-running workflow role has a soul file so this can't recur
+      silently again.
+- [x] Real git integration against the **project's own source tree** —
+      `orchestrator/project_git.py` (`is_git_repo`, `current_revision`,
+      `commit_all`, `diff`). Deliberately never `git init`s a project —
+      unlike `artifacts/` (this system's own bookkeeping tree,
+      `artifact_versioning.ensure_repo()` may freely create), the project
+      source is the user's; a non-git project source degrades to "no
+      commit, no diff" rather than initializing one uninvited, the same
+      convention `indexing/freshness.py` already established for
+      `current_git_revision()`. 10 tests against real `git` subprocesses.
+- [x] Diff-aware reviewer/QA context — `context/providers.py::DiffProvider`.
+      `TurnRunner` now captures `state.yaml`'s `implementation_base_revision`
+      once, the first time a project enters `implementation` (stable across
+      a QA-reject retry loop back through it, so the diff stays cumulative
+      from the true start rather than resetting per attempt), commits the
+      builder's actual working-tree changes to the project's own git
+      history after every successful `implementation` turn
+      (`SOURCE_COMMITTED` event, no empty commits), and hands `reviewer`/
+      `qa` a real embedded diff (key `git-diff`, matching qa's existing
+      allowlist entry) instead of nothing. 9 new tests across
+      `test_providers.py`/`test_jobs.py`. **Verified live**: a real toy
+      Flutter-shaped git project, the real Dart indexer, a real
+      builder → reviewer turn sequence (only `hermes_run` mocked) — the
+      `SOURCE_COMMITTED` event fired, `implementation_base_revision` held
+      the project's real pre-change commit, and the reviewer's actual
+      rendered prompt embedded the real diff text (`+class Feature`).
+- [ ] Checking out branches — not built; nothing in this system's workflow
+      yet operates on more than the project's current branch/working tree
+      (no multi-branch or PR-based flow exists to need it).
 
 ## Phase 6 — Flutter toolchain
 

@@ -498,3 +498,163 @@ def test_index_provider_items_appear_in_the_manifest_for_a_guided_turn(monkeypat
 
     manifest = runner.store.read_turn_artifact(outcome.turn_id, "manifest.yaml")
     assert "lib/a.dart" in manifest
+
+
+# ---- project source git integration (Phase 5) -------------------------------
+
+
+REVIEW_WORKFLOW_YAML = """
+initial: implementation
+states:
+  implementation:
+    kind: autonomous
+    role: builder
+    max_attempts: 2
+    on_failure: blocked
+    next: review
+  review:
+    kind: autonomous
+    role: reviewer
+    max_attempts: 2
+    on_failure: blocked
+    next: done
+  done:
+    kind: terminal
+  blocked:
+    kind: terminal
+    recoverable: true
+"""
+
+REVIEW_AGENTS_YAML = """
+defaults:
+  toolsets: [skills]
+  context_mode: assembled
+roles:
+  builder:
+    context_mode: guided
+    toolsets: [terminal]
+    budget: {max_input_tokens: 20000, max_output_tokens: 6000}
+    read_budget: {max_files: 10, max_bytes: 10000, max_tool_calls: 20}
+  reviewer:
+    context_mode: guided
+    toolsets: [terminal]
+    budget: {max_input_tokens: 20000, max_output_tokens: 6000}
+    read_budget: {max_files: 10, max_bytes: 10000, max_tool_calls: 20}
+"""
+
+REVIEW_MODELS_YAML = """
+routing:
+  builder: {provider: openrouter, model: openai/gpt-4o-mini}
+  reviewer: {provider: openrouter, model: openai/gpt-4o-mini}
+"""
+
+
+@pytest.fixture
+def review_runner(tmp_path):
+    (tmp_path / "workflow.yaml").write_text(REVIEW_WORKFLOW_YAML)
+    (tmp_path / "agents.yaml").write_text(REVIEW_AGENTS_YAML)
+    (tmp_path / "models.yaml").write_text(REVIEW_MODELS_YAML)
+    (tmp_path / "souls").mkdir()
+
+    store = ProjectStore(tmp_path / "agent-state")
+    workflow = WorkflowDefinition.load(tmp_path / "workflow.yaml")
+    agents = AgentsConfig.load(tmp_path / "agents.yaml")
+    models = ModelsConfig.load(tmp_path / "models.yaml")
+
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+
+    return TurnRunner(
+        project_id="toy", store=store, workflow=workflow, agents=agents,
+        models=models, souls_dir=str(tmp_path / "souls"),
+        project_source_root=project,
+    )
+
+
+def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch, review_runner):
+    from orchestrator.project_git import current_revision
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    review_runner.run_turn("build it")
+
+    assert review_runner.store.read_state()["implementation_base_revision"] == (
+        current_revision(review_runner.project_source_root)
+    )
+
+
+def test_builder_turn_commits_project_source_changes(monkeypatch, review_runner):
+    from orchestrator.project_git import current_revision
+
+    base_revision = current_revision(review_runner.project_source_root)
+
+    def fake_run_that_writes_a_file(request, usage_file=None):
+        (review_runner.project_source_root / "new_file.dart").write_text("class New {}", encoding="utf-8")
+        return HermesResult(
+            response="Added a class.",
+            usage={"failed": False, "session_id": "sess-1", "input_tokens": 100},
+            exit_code=0, session_id="sess-1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_file)
+
+    review_runner.run_turn("build it")
+
+    new_revision = current_revision(review_runner.project_source_root)
+    assert new_revision != base_revision
+    assert any(e["type"] == "SOURCE_COMMITTED" for e in review_runner.store.read_events())
+
+
+def test_builder_turn_with_no_source_changes_commits_nothing(monkeypatch, review_runner):
+    from orchestrator.project_git import current_revision
+
+    base_revision = current_revision(review_runner.project_source_root)
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    review_runner.run_turn("build it")
+
+    assert current_revision(review_runner.project_source_root) == base_revision
+
+
+def test_base_revision_is_stable_across_a_second_implementation_attempt(monkeypatch, review_runner):
+    from orchestrator.project_git import current_revision
+
+    def fake_run_that_writes_a_file(request, usage_file=None):
+        (review_runner.project_source_root / "attempt.dart").write_text("class A {}", encoding="utf-8")
+        return HermesResult(
+            response="ok", usage={"failed": False, "session_id": "sess-1", "input_tokens": 10},
+            exit_code=0, session_id="sess-1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_file)
+    review_runner.run_turn("build it")
+    first_base = review_runner.store.read_state()["implementation_base_revision"]
+
+    # Simulate a QA rejection sending the project back through implementation.
+    review_runner.store.update_state(workflow_state="implementation", attempts=0)
+    review_runner.run_turn("build it again")
+
+    assert review_runner.store.read_state()["implementation_base_revision"] == first_base
+
+
+def test_reviewer_gets_the_real_diff_after_a_builder_commit(monkeypatch, review_runner):
+    def fake_run_that_writes_a_feature(request, usage_file=None):
+        (review_runner.project_source_root / "feature.dart").write_text(
+            "class Feature {}", encoding="utf-8",
+        )
+        return HermesResult(
+            response="ok", usage={"failed": False, "session_id": "sess-1", "input_tokens": 10},
+            exit_code=0, session_id="sess-1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_feature)
+
+    review_runner.run_turn("build it")
+    review_runner.store.update_state(workflow_state="review", attempts=0)
+    outcome = review_runner.run_turn("review it")
+
+    manifest = review_runner.store.read_turn_artifact(outcome.turn_id, "manifest.yaml")
+    assert "git-diff" in manifest
+    prompt = review_runner.store.read_turn_artifact(outcome.turn_id, "prompt.md")
+    assert "+class Feature {}" in prompt

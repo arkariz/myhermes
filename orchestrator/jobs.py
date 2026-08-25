@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import artifact_versioning, summarizer
+from . import artifact_versioning, project_git, summarizer
 from .approvals import parse_decision_blocks
 from .config import AgentsConfig, ModelsConfig
 from .context.builder import BuildRequest, ContextBuilder
@@ -33,6 +33,7 @@ from .context.denylist import ContextPolicy
 from .context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
+    DiffProvider,
     IndexProvider,
     ProjectIdentityProvider,
     RecentTurnsProvider,
@@ -162,6 +163,7 @@ class TurnRunner:
             EventType.AGENT_TURN_STARTED, workflow_state=workflow_state_name, turn_id=turn_id,
         )
         self.store.append_conversation_turn(workflow_state_name, "human", human_message)
+        self._ensure_implementation_base_revision(workflow_state_name)
 
         current_index_revision = self._current_index_revision(role_cfg)
         self.store.update_state(index_revision=current_index_revision)
@@ -228,6 +230,7 @@ class TurnRunner:
             self._update_summary(workflow_state_name, turn_id, human_message, result.response)
 
         self._version_artifacts(workflow_state_name, turn_id)
+        self._commit_project_source(workflow_state_name, turn_id)
 
         self.store.update_state(attempts=0)
         return TurnOutcome(
@@ -257,6 +260,12 @@ class TurnRunner:
             # own tools -- an assembled-mode role (planner, architect) has
             # no toolset to act on a bare path list with.
             providers.append(IndexProvider(self.store, project_source_root=self.project_source_root))
+        if role in ("reviewer", "qa"):
+            # Diff-aware context (docs/plan.md Phase 5): the builder's real
+            # changes to the project source, not nothing. Builder itself
+            # gets no DiffProvider -- there's nothing to diff against on
+            # the turn that's still producing the change.
+            providers.append(DiffProvider(self.store, self.project_source_root))
         builder = ContextBuilder(providers, self.estimator)
         policy = ContextPolicy(
             role=role, allowlist=role_cfg.allowlist, denylist=role_cfg.denylist,
@@ -339,6 +348,51 @@ class TurnRunner:
         if commit_hash is not None:
             self.events.emit(
                 EventType.ARTIFACT_UPDATED, workflow_state=workflow_state, turn_id=turn_id,
+                payload={"commit": commit_hash},
+            )
+
+    def _ensure_implementation_base_revision(self, workflow_state_name: str) -> None:
+        """Capture the project source's revision the first time a project
+        enters `implementation`, so `DiffProvider` always diffs against
+        "before the builder touched anything" -- including across a QA
+        rejection sending work back through `implementation` more than
+        once, where the diff should stay cumulative from the original
+        start rather than resetting per attempt.
+
+        Best-effort and silent: no project source configured, or the
+        source isn't a git repo, both mean `DiffProvider` will find no
+        base revision later and simply show no diff -- not a turn failure.
+        """
+        if workflow_state_name != "implementation" or self.project_source_root is None:
+            return
+        if "implementation_base_revision" in self.store.read_state():
+            return
+        if not project_git.is_git_repo(self.project_source_root):
+            return
+        self.store.update_state(
+            implementation_base_revision=project_git.current_revision(self.project_source_root)
+        )
+
+    def _commit_project_source(self, workflow_state_name: str, turn_id: str) -> None:
+        """Commit the builder's changes to the project's own git repo, so
+        `DiffProvider` has something real for reviewer/qa to read.
+
+        Best-effort, mirroring `_version_artifacts()`: a non-git or
+        unconfigured project source, or a builder turn that touched
+        nothing (`commit_all()` returns None), are both normal outcomes,
+        not turn failures.
+        """
+        if workflow_state_name != "implementation" or self.project_source_root is None:
+            return
+        if not project_git.is_git_repo(self.project_source_root):
+            return
+        try:
+            commit_hash = project_git.commit_all(self.project_source_root, message=f"builder: {turn_id}")
+        except project_git.ProjectGitError:
+            return
+        if commit_hash is not None:
+            self.events.emit(
+                EventType.SOURCE_COMMITTED, workflow_state=workflow_state_name, turn_id=turn_id,
                 payload={"commit": commit_hash},
             )
 

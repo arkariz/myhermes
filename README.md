@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-287/287 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+308/308 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -83,6 +83,9 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
 | `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
 | `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Not wired into anything yet — nothing produces real tool output until Phase 6's `POST /exec` exists |
+| `orchestrator/project_git.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
+| `orchestrator/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
+| `config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
@@ -95,9 +98,13 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 - Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
   Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
   needs to actually build a Flutter app.
-- A project-source volume — nothing built so far reads or writes a
-  project's actual code; that starts with Phase 5/6's guided-retrieval
-  toolsets doing real file I/O beyond the index.
+- A project-source volume in `compose.yaml` — nothing built so far reads
+  or writes a project's actual code from *inside a container*; every live
+  verification so far has run against a host filesystem path. That starts
+  with Phase 6's toolchain actually needing to build inside agent-runtime.
+- Branch checkout in `project_git.py` — not built, and nothing in this
+  system's workflow currently operates on more than the project's current
+  branch/working tree, so there's no real caller for it yet.
 
 ## Phase 1 is done and verified live
 
@@ -299,6 +306,51 @@ plan's slower primary mode, AST-only stays what exists here since nothing
 yet needs a resolved call graph) and a `GraphifyIndexer` for non-Dart repos
 (lower priority than the above for this project's actual Flutter/Dart
 scope).
+
+## Phase 5: the builder actually commits, and reviewer/QA see a real diff
+
+`orchestrator/project_git.py` is real git integration against the
+**project's own source tree** — not agent-state's own git repos (see
+`artifact_versioning.py`, a separate repo scoped to `artifacts/`). It
+never `git init`s a project: unlike `artifacts/`, which this system owns
+outright, the project source is the user's, so a non-git project source
+degrades to "no commit, no diff" — the same convention
+`indexing/freshness.py` already established for `current_git_revision()`
+— rather than initializing a repo nobody asked for.
+
+`TurnRunner` now:
+
+- **Captures `implementation_base_revision`** in `state.yaml` the first
+  time a project enters `implementation` — once, not per attempt, so a
+  QA rejection sending work back through `implementation` keeps the diff
+  cumulative from the true start rather than resetting.
+- **Commits the builder's actual changes** to the project's own git
+  history after every successful `implementation` turn
+  (`SOURCE_COMMITTED` event; no empty commits, same reasoning as
+  `artifact_versioning.commit()`).
+- **Hands `reviewer`/`qa` the real diff** via the new
+  `DiffProvider` — embedded content (not a path reference, unlike the
+  file inventory), key `git-diff`, matching `qa`'s existing
+  `context_allowlist` entry for exactly that string. Builder itself gets
+  no `DiffProvider` — there's nothing to diff against on the turn that's
+  still producing the change.
+
+Also found and fixed while finishing this phase: `builder`, `reviewer`,
+and `qa` had been fully configured in `config/agents.yaml` and
+`config/workflow.yaml` with **no soul file** to match — `RoleSoulProvider`
+degrades that to silently contributing nothing rather than erroring, so
+three of the seven agent-running roles had no persona at all and nothing
+surfaced it. `config/souls/{builder,reviewer,qa}.md` close the gap, and
+`tests/test_souls.py` asserts every agent-running workflow role has a
+soul file so it can't happen silently again.
+
+**Verified live**: a real toy Flutter-shaped git project, the real Dart
+indexer, a real `implementation → review` turn sequence (only
+`hermes_run` mocked) — the `SOURCE_COMMITTED` event fired,
+`implementation_base_revision` held the project's real pre-change commit,
+and the reviewer's actual rendered prompt embedded the real diff text
+(`+class Feature`). 19 new tests across `test_project_git.py`,
+`test_providers.py`, and `test_jobs.py`.
 
 ## RTK: tool-output compression, ready but not wired in yet
 

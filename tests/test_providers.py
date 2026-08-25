@@ -10,6 +10,7 @@ from orchestrator.context.builder import BuildRequest
 from orchestrator.context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
+    DiffProvider,
     IndexProvider,
     ProjectIdentityProvider,
     ReferencedFilesProvider,
@@ -285,3 +286,71 @@ def test_referenced_files_are_handed_over_as_paths_not_content():
     items = provider.collect(make_request(referenced_paths=("lib/main.dart", "test/main_test.dart")))
     assert {i.key for i in items} == {"lib/main.dart", "test/main_test.dart"}
     assert all(i.is_reference for i in items)
+
+
+# ---- DiffProvider ------------------------------------------------------------
+
+
+def _git_repo(path):
+    import subprocess
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.local"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+
+
+def _commit(path, filename, content, message):
+    import subprocess
+    (path / filename).write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=path, check=True)
+
+
+def test_diff_provider_returns_nothing_without_a_project_source_root(tmp_path):
+    store = ProjectStore(tmp_path)
+    assert DiffProvider(store, None).collect(make_request()) == []
+
+
+def test_diff_provider_returns_nothing_for_a_non_git_project(tmp_path):
+    store = ProjectStore(tmp_path / "state")
+    project = tmp_path / "source"
+    project.mkdir()
+    assert DiffProvider(store, project).collect(make_request()) == []
+
+
+def test_diff_provider_returns_nothing_before_a_base_revision_is_recorded(tmp_path):
+    project = tmp_path / "source"
+    _git_repo(project)
+    _commit(project, "a.dart", "class A {}", "first")
+
+    store = ProjectStore(tmp_path / "state")
+    assert DiffProvider(store, project).collect(make_request()) == []
+
+
+def test_diff_provider_shows_the_real_diff_since_the_base_revision(tmp_path):
+    project = tmp_path / "source"
+    _git_repo(project)
+    _commit(project, "a.dart", "class A {}", "first")
+
+    store = ProjectStore(tmp_path / "state")
+    store.update_state(implementation_base_revision=None)
+    _commit(project, "b.dart", "class B {}", "second")
+
+    items = DiffProvider(store, project).collect(make_request())
+
+    assert len(items) == 1
+    assert items[0].key == "git-diff"
+    assert not items[0].is_reference
+    assert "+class B {}" in items[0].content
+
+
+def test_diff_provider_returns_nothing_when_there_are_no_changes_since_the_base(tmp_path):
+    project = tmp_path / "source"
+    _git_repo(project)
+    _commit(project, "a.dart", "class A {}", "first")
+
+    store = ProjectStore(tmp_path / "state")
+    from orchestrator.project_git import current_revision
+    store.update_state(implementation_base_revision=current_revision(project))
+
+    assert DiffProvider(store, project).collect(make_request()) == []

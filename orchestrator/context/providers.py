@@ -331,3 +331,55 @@ class IndexProvider:
                     reason="present in the codebase index", content=None,
                 ))
         return items
+
+
+class DiffProvider:
+    """The real git diff of the builder's changes to the project source,
+    for the reviewer/qa roles (docs/plan.md: QA's context should be "the
+    git diff", named directly alongside the acceptance criteria).
+
+    Embedded content, not a reference: unlike the file inventory, a diff
+    isn't something the agent should have to go re-read with its own
+    tools -- it's the one thing every downstream role in this state
+    definitely needs, so it's handed over whole. Priority 4, alongside
+    `ArtifactSectionProvider` -- the diff is this role's working artifact,
+    functionally.
+
+    Reads `state.yaml`'s `implementation_base_revision` (set once by
+    `TurnRunner` on the first turn of the `implementation` state) and
+    diffs the project source from there to its current commit via
+    `orchestrator/project_git.py`. Degrades to nothing -- not a failure --
+    whenever there's nothing to show: no project source configured, the
+    source isn't a git repo, no base revision recorded yet, or the diff
+    itself is empty (a builder turn that produced no source changes,
+    which is an outcome, not a bug in this provider).
+    """
+
+    name = "diff"
+
+    def __init__(self, store: ProjectStore, project_source_root: Path | str | None):
+        self.store = store
+        self.project_source_root = Path(project_source_root) if project_source_root else None
+
+    def collect(self, request: BuildRequest) -> list[ContextItem]:
+        if self.project_source_root is None:
+            return []
+
+        from .. import project_git  # local: only guided review/qa roles need this
+
+        if not project_git.is_git_repo(self.project_source_root):
+            return []
+
+        state_data = self.store.read_state()
+        if "implementation_base_revision" not in state_data:
+            return []  # the implementation state hasn't captured one yet
+
+        text = project_git.diff(self.project_source_root, state_data["implementation_base_revision"])
+        if not text.strip():
+            return []
+
+        return [ContextItem(
+            key="git-diff", layer=3, priority=4, volatility=4,
+            reason="the builder's actual changes to the project source",
+            content=text,
+        )]
