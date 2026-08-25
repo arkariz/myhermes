@@ -1,0 +1,55 @@
+# The real orchestrator/agent-runtime container split -- the topology
+# docs/plan.md describes, now that both sides of the HTTP boundary exist
+# (runtime/server.py, orchestrator/jobs.py's runtime_url).
+#
+# Deliberately smaller than the plan's original diagram, matching what's
+# actually built and verified rather than what was sketched:
+#
+#   * No shared Hermes-profile volume. The plan's diagram names
+#     "hermes-profiles:/root/.hermes" -- a single volume shared by every
+#     request. That's exactly the isolation boundary the Phase 1 spike
+#     found broken (two projects sharing one HERMES_HOME both recalled the
+#     same planted secret) and fixed by making HERMES_HOME per-project.
+#     Mounting a shared profile volume here would reintroduce that bug.
+#     agent-runtime needs no Hermes-related volume at all: every request
+#     carries its own `home_dir`, which lives under the agent-state volume
+#     both containers already mount.
+#   * No gateway (LiteLLM/KeiRouter) service. Never implemented --
+#     runtime/hermes.py passes --provider/--model straight through to the
+#     hermes CLI, which talks to the provider directly. Adding a gateway
+#     service here would describe a capability that doesn't exist yet.
+#   * No project-source volume. Nothing built so far (Phase 1/2) reads or
+#     writes a project's actual source tree -- that starts with the
+#     builder/reviewer/qa roles' guided-retrieval toolsets (Phase 4/5/6),
+#     not before.
+
+services:
+  agent-runtime:
+    build:
+      context: .
+      dockerfile: docker/agent-runtime/Dockerfile
+    volumes:
+      - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator/Dockerfile
+    depends_on:
+      - agent-runtime
+    environment:
+      AGENTIC_RUNTIME_URL: http://agent-runtime:8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_FORUM_CHAT_ID: ${TELEGRAM_FORUM_CHAT_ID:-}
+      TELEGRAM_DEFAULT_HOST_ROOT: ${TELEGRAM_DEFAULT_HOST_ROOT:-/workspace/projects}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./config:/app/config
+      - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
+    restart: unless-stopped
+
+# One-off CLI commands don't need the bot running:
+#   docker compose run --rm orchestrator python -m orchestrator.cli status toy

@@ -128,9 +128,9 @@ work in Phase 1 already covers most of it:
 ## Phase 6 — Flutter toolchain
 
 - [ ] Not started. `POST /exec`, RTK-wrapped `flutter pub get / analyze /
-      test / build apk`. The real `docker/agent-runtime/Dockerfile` (with
-      Flutter/Android SDK/JDK) doesn't exist yet — `docker/spike/Dockerfile`
-      only proves the base Hermes+OpenRouter image works.
+      test / build apk`. `docker/agent-runtime/Dockerfile` now exists and
+      is verified live (serves `runtime/server.py`, real Hermes CLI inside)
+      but has no Flutter/Android SDK/JDK on top of it yet.
 
 ## Phase 7 — Optional infra
 
@@ -151,11 +151,17 @@ work in Phase 1 already covers most of it:
       Verified live across real process boundaries (separate CLI and
       server processes, real `httpx` call, real 502 propagated back as a
       `RuntimeError`).
-- [ ] `compose.yaml` still doesn't exist, so this HTTP path has only been
-      exercised host-to-host (two local processes), never container-to-
-      container. The topology is real now; the Docker networking around it
-      isn't yet.
+- [x] `compose.yaml` + `docker/agent-runtime/Dockerfile` +
+      `docker/orchestrator/Dockerfile` — the real container split. Smaller
+      than the plan's original diagram on purpose: no shared Hermes-profile
+      volume (would reintroduce the cross-project memory leak the spike
+      fixed) and no gateway service (never implemented). Verified live:
+      real `docker compose build`/`up`, `agent-runtime`'s `/health` and
+      `hermes --version` confirmed from inside its own container, and a
+      full `orchestrator` → HTTP → `agent-runtime` → real `hermes`
+      subprocess round trip (failed on "No LLM provider configured" since
+      no API key was set on purpose, not on a missing binary).
 - [ ] `runtime/rtk.py` — tool-output compression wrapper + ratio metrics.
-- [ ] `compose.yaml` — no container topology defined yet; everything
-      verified live so far ran directly on the host or in the standalone
-      spike container.
+- [ ] No project-source volume in `compose.yaml` yet — nothing built so far
+      reads or writes a project's actual code. Needed once Phase 4/5/6's
+      guided-retrieval toolsets exist.

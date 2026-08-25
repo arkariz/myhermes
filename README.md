@@ -78,17 +78,20 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
 | `orchestrator/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
-| `runtime/server.py` | `POST /run` — the HTTP boundary for the container topology; wraps `runtime/hermes.py` unchanged. Not yet called by `jobs.py` (see below) |
+| `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
+| `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
 - An RTK output-compression wrapper (`runtime/rtk.py`).
-  `docker/spike/Dockerfile` proves the base image works (Hermes CLI +
-  OpenRouter installed and callable); the real agent-runtime Dockerfile
-  still needs Flutter/Android/JDK/RTK added on top of it.
+- Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
+  Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
+  needs to actually build a Flutter app.
 - Codebase intelligence (Dart indexer, Graphify adapter) — Phase 4.
-- `compose.yaml`.
+- A project-source volume — nothing built so far reads or writes a
+  project's actual code; that starts with Phase 4/5/6's guided-retrieval
+  toolsets.
 
 ## Phase 1 is done and verified live
 
@@ -174,6 +177,41 @@ re-raised as a `RuntimeError` that surfaced cleanly in the CLI's own
 traceback — the full chain, not simulated in one process. 5 more tests
 (`tests/test_runtime_client.py`) plus 3 in `test_jobs.py` cover the
 in-process/HTTP branch selection and error mapping with things mocked.
+
+## The real container topology
+
+```bash
+docker compose build
+docker compose up -d agent-runtime
+docker compose run --rm orchestrator python -m orchestrator.cli project new toy \
+  --host-path /workspace/projects/toy --state-path /workspace/agent-state/toy
+```
+
+`compose.yaml` + `docker/agent-runtime/Dockerfile` (Hermes CLI, serves
+`runtime/server.py`) + `docker/orchestrator/Dockerfile` (state machine,
+context builder, Telegram bot — no Hermes CLI, no Docker socket). Smaller
+than the plan's original diagram, deliberately: no shared Hermes-profile
+volume (the plan names one; mounting it would reintroduce the exact
+cross-project memory leak the Phase 1 spike found and fixed — every
+request's `home_dir` already lives under the agent-state volume both
+containers mount, so no separate profile volume is needed or safe), and no
+gateway service (never implemented; Hermes calls the provider directly).
+
+**Verified live**, real `docker compose build` + `up`, real containers:
+`agent-runtime`'s `/health` answered from inside its own container, and
+`hermes --version` confirmed the real CLI is there. Then, across the two
+real containers — `orchestrator` (via `docker compose run`) → HTTP →
+`agent-runtime` → a real `hermes` subprocess launch: the response was
+`"No LLM provider configured"` (no API key was set, deliberately, to avoid
+spend), not "binary not found" — proof the binary genuinely runs inside
+agent-runtime and the whole chain reaches it, with the failure bounded
+correctly (`attempts: 1`, not a crash) back through to the CLI.
+
+One thing this caught live: MSYS/Git Bash's path-mangling (the same class
+of bug the Phase 1 spike hit with Docker volume args) also mangles a plain
+string argument like `--host-path /workspace/projects/toy` into a Windows
+path — `MSYS_NO_PATHCONV=1` is required before `docker compose run` on
+Git Bash, same fix as before, different call site.
 
 ## Benchmark: does the context/session design actually help?
 

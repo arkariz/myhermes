@@ -26,3 +26,8 @@ docker/spike/secrets/.env.spike
 
 # Real Telegram bot token for the Phase 2 live smoke test. Never committed.
 secrets/.env.telegram
+
+# compose.yaml's default agent-state bind mount -- generated project state
+# for every project run through the container topology.
+data/agent-state/*
+!data/agent-state/.gitkeep
