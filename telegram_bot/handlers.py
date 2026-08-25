@@ -33,6 +33,7 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes
 
+from indexing.dart_adapter import DartAnalyzerIndexer
 from orchestrator.approval_flow import apply_approval
 from orchestrator.approvals import ApprovalError
 from orchestrator.config import AgentsConfig, ModelsConfig
@@ -96,6 +97,7 @@ def _store_and_workflow(bot_data: dict, project_id: str) -> tuple[ProjectStore, 
 
 
 def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
+    entry = bot_data["registry"].get(project_id)
     store, workflow = _store_and_workflow(bot_data, project_id)
     config_dir = _config_dir(bot_data)
     agents = AgentsConfig.load(config_dir / "agents.yaml")
@@ -104,6 +106,9 @@ def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
         project_id=project_id, store=store, workflow=workflow,
         agents=agents, models=models, souls_dir=str(bot_data["souls_dir"]),
         runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
+        # Same "always wired, never required" reasoning as orchestrator/cli.py.
+        project_source_root=entry.host_path,
+        indexer=DartAnalyzerIndexer(),
     )
 
 

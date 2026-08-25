@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-262/262 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+276/276 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -81,16 +81,14 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
 | `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
 | `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
-| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` — a real `package:analyzer`-based Dart CLI, called from Python via subprocess. Verified live |
+| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider`, wired into `TurnRunner` by default. Verified live |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
 ## What's still a spec, not code
 
-- Wiring the Dart indexer into `TurnRunner`/context providers (no
-  `IndexProvider`, no `index_revision` ever set in `state.yaml` yet),
-  resolved (not just AST) analysis for `calls`/`instantiates` edges, a
-  `GraphifyIndexer` for non-Dart repos, and freshness/incremental
-  indexing by git commit — see `docs/progress.md` Phase 4 for the split.
+- Resolved (not just AST) Dart analysis, dependency expansion + relevance
+  ranking on top of `IndexProvider`, and a `GraphifyIndexer` for non-Dart
+  repos — see `docs/progress.md` Phase 4 for the split.
 - An RTK output-compression wrapper (`runtime/rtk.py`).
 - Flutter/Android SDK/JDK in `docker/agent-runtime/Dockerfile` — it has
   Hermes and serves `runtime/server.py`, but not the toolchain Phase 6
@@ -220,7 +218,7 @@ string argument like `--host-path /workspace/projects/toy` into a Windows
 path — `MSYS_NO_PATHCONV=1` is required before `docker compose run` on
 Git Bash, same fix as before, different call site.
 
-## Codebase intelligence: a real Dart indexer (Phase 4, started)
+## Codebase intelligence: a real Dart indexer, wired in (Phase 4)
 
 ```bash
 cd tools/dart_indexer && dart pub get   # once
@@ -252,17 +250,37 @@ of bare `dart` resolves it fine via `PATHEXT`); set `DART_EXECUTABLE` to
 the `.bat` on Windows. 10 Dart tests (`tools/dart_indexer/test/`) + 9
 Python tests (`tests/test_dart_adapter.py`, subprocess mocked).
 
-**Not yet wired into `TurnRunner`.** No `IndexProvider` exists to feed a
-graph into context building, and nothing ever sets `index_revision` in
-`state.yaml` — a field `SessionManager.decide()` already reads and
-compares (part of the original 8 boundary triggers), tested against a
-synthetic value but never against output from a real indexer until now.
-Also not built: resolved analysis (`calls`/`instantiates` edges, which
-need `flutter pub get` and a real `AnalysisContextCollection` — the plan
-frames this as the slower primary mode with AST-only as a fast fallback;
-here AST-only is what exists, since nothing yet needs a resolved call
-graph), a `GraphifyIndexer`, and freshness/incremental indexing by git
-commit.
+**Now wired into `TurnRunner`.** `indexing/freshness.py::ensure_fresh()`
+rebuilds only when a project's `git rev-parse HEAD` has actually moved
+since the last cached index — freshness/incremental indexing by git
+commit, the gap the brief calls out Pang leaving open.
+`context/providers.py::IndexProvider` hands the resulting file inventory
+to guided-retrieval roles as references (paths, not embedded content).
+`TurnRunner._current_index_revision()` computes the real value every turn
+for a guided role with a project source configured, persists it to
+`state.yaml`, and feeds it to `SessionManager.decide()` — the
+`index_revision` boundary trigger (one of the original 8) is exercised
+against a real indexer's output for the first time, not a synthetic
+string. Wired by default in both `orchestrator/cli.py` and
+`telegram_bot/handlers.py`; inert (degrades to "no index," never breaks a
+turn) for a non-Dart project or a host with no Dart SDK.
+
+**Verified live**: a real `TurnRunner`, a real toy Flutter-shaped git
+project, the real Dart CLI, `hermes_run` mocked (the appropriately-scoped
+mock — everything *except* the model call ran for real). `state.yaml`'s
+`index_revision` held the project's actual commit hash, and the turn's
+real `manifest.yaml` listed `lib/app.dart` with
+`reason: present in the codebase index`. 13 more tests across
+`test_freshness.py`/`test_providers.py`/`test_jobs.py`.
+
+**Deliberately not built**, same reasoning as before: resolved analysis
+(`calls`/`instantiates` edges — the plan's slower primary mode; AST-only
+stays what exists here since nothing yet needs a resolved call graph),
+dependency expansion and relevance ranking (named in the same plan
+sentence as the file inventory `IndexProvider` ships — shipping the
+inventory first rather than half-building ranking on top of it), and a
+`GraphifyIndexer` for non-Dart repos (lower priority than the above for
+this project's actual Flutter/Dart scope).
 
 ## Benchmark: does the context/session design actually help?
 

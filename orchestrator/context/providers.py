@@ -198,3 +198,47 @@ class ReferencedFilesProvider:
             )
             for path in request.referenced_paths
         ]
+
+
+class IndexProvider:
+    """The codebase index's file inventory (docs/plan.md Phase 4:
+    "symbol+file retrieval ... as new context providers feeding
+    guided-retrieval paths") -- guided-retrieval roles get a real list of
+    what exists in the project instead of nothing.
+
+    Handed over as references (content=None), same as ReferencedFiles --
+    an inventory is where to look, not what to read; the agent reads with
+    its own tools, capped by request.read_budget. Priority 9 (lower than
+    ReferencedFilesProvider's 5): an explicit "read this file for this
+    task" beats "this file exists somewhere in the project" when the
+    budget is tight.
+
+    Dependency expansion (a referenced file's own imports) and relevance
+    ranking against the task -- both named in the same plan sentence -- are
+    deliberately not built here; this ships the inventory itself first
+    rather than half-building ranking on top of it. See docs/progress.md
+    Phase 4.
+    """
+
+    name = "index"
+
+    def __init__(self, store: ProjectStore):
+        self.store = store
+
+    def collect(self, request: BuildRequest) -> list[ContextItem]:
+        from indexing.freshness import load_graph  # local: only guided roles need this
+
+        graph = load_graph(self.store.index_dir())
+        if graph is None:
+            return []
+
+        files = sorted({n.file for n in graph.nodes if n.file})
+        already_referenced = set(request.referenced_paths)
+        return [
+            ContextItem(
+                key=f, layer=3, priority=9, volatility=4,
+                reason="present in the codebase index", content=None,
+            )
+            for f in files
+            if f not in already_referenced  # dedupe() would drop these anyway; skip the noise in the manifest
+        ]

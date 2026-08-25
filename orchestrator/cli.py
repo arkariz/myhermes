@@ -18,6 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from indexing.dart_adapter import DartAnalyzerIndexer
 from telegram_bot.topics import ForumTopicError, create_forum_topic
 
 from .approval_flow import apply_approval
@@ -107,6 +108,13 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
         # single-host behavior as every live run so far. Set this to route
         # Hermes invocations through runtime/server.py over HTTP instead.
         runtime_url=os.environ.get("AGENTIC_RUNTIME_URL"),
+        # Always wired, never a hard requirement: DartAnalyzerIndexer.
+        # supports() returns False for a project with no pubspec.yaml, and
+        # TurnRunner._current_index_revision() degrades to "no index" on
+        # any indexer failure -- a project that isn't Dart, or a host with
+        # no Dart SDK, behaves exactly as it did before Phase 4.
+        project_source_root=entry.host_path,
+        indexer=DartAnalyzerIndexer(),
     )
     return runner, store
 

@@ -401,3 +401,100 @@ def test_a_failed_turn_does_not_commit(monkeypatch, runner):
 
     from orchestrator.artifact_versioning import log
     assert log(runner.store.artifacts_dir()) == []
+
+
+# ---- codebase index wiring (indexing/, Phase 4) -----------------------------
+
+
+class FakeIndexer:
+    """Standing in for DartAnalyzerIndexer -- these tests need no Dart SDK."""
+
+    def supports(self, project_root):
+        return True
+
+    def build(self, project_root):
+        from indexing.port import IndexResult
+        return IndexResult(nodes=(), edges=())
+
+
+def _git_repo(path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.local"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "a.dart").write_text("class A {}", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "first"], cwd=path, check=True)
+
+
+def test_no_indexer_configured_means_no_index_revision(monkeypatch, runner):
+    runner.store.update_state(workflow_state="implementation", attempts=0)
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    runner.run_turn("build it")
+
+    assert runner.store.read_state()["index_revision"] is None
+
+
+def test_guided_role_with_an_indexer_gets_a_real_index_revision(monkeypatch, runner, tmp_path):
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+
+    runner.project_source_root = project
+    runner.indexer = FakeIndexer()
+    runner.store.update_state(workflow_state="implementation", attempts=0)
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    runner.run_turn("build it")
+
+    from indexing.freshness import current_git_revision
+    assert runner.store.read_state()["index_revision"] == current_git_revision(project)
+
+
+def test_assembled_role_never_gets_an_index_revision_even_with_an_indexer(monkeypatch, runner, tmp_path):
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+
+    runner.project_source_root = project
+    runner.indexer = FakeIndexer()
+    # runner's default state is "planning" -- role: planner, context_mode: assembled
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    runner.run_turn("Build a habit tracker.")
+
+    assert runner.store.read_state()["index_revision"] is None
+
+
+def test_index_provider_items_appear_in_the_manifest_for_a_guided_turn(monkeypatch, runner, tmp_path):
+    from datetime import datetime, timezone
+
+    from indexing.freshness import IndexMetadata, current_git_revision, save_graph, save_metadata
+    from indexing.port import IndexNode, IndexResult
+
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+    # Pre-seed both the graph and its metadata, matching the current
+    # revision, so ensure_fresh() treats this as already-cached and
+    # doesn't overwrite it by calling FakeIndexer.build() (which returns
+    # an empty graph).
+    save_graph(runner.store.index_dir(), IndexResult(
+        nodes=(IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),),
+        edges=(),
+    ))
+    save_metadata(runner.store.index_dir(), IndexMetadata(
+        tool="FakeIndexer", source_revision=current_git_revision(project),
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    ))
+
+    runner.project_source_root = project
+    runner.indexer = FakeIndexer()
+    runner.store.update_state(workflow_state="implementation", attempts=0)
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+
+    outcome = runner.run_turn("build it")
+
+    manifest = runner.store.read_turn_artifact(outcome.turn_id, "manifest.yaml")
+    assert "lib/a.dart" in manifest

@@ -114,7 +114,7 @@ work in Phase 1 already covers most of it:
       mocked (same reasoning as `test_store.py`: the property under test
       is git's own behavior).
 
-## Phase 4 — Codebase intelligence (started)
+## Phase 4 — Codebase intelligence (core loop done; Dart/AST scope, not full)
 
 - [x] `indexing/port.py` — the `CodebaseIndexer` protocol (`IndexNode`,
       `IndexEdge`, `IndexResult`).
@@ -136,23 +136,49 @@ work in Phase 1 already covers most of it:
       into `IndexNode`/`IndexEdge`. Found live: on Windows, `subprocess.run`
       needs `dart.bat`, not the extension-less `dart` shim
       (`DART_EXECUTABLE` env var), documented in `dart_adapter.py`.
+- [x] Freshness/incremental indexing by git commit —
+      `indexing/freshness.py::ensure_fresh()`. Rebuilds only when the
+      project's current `git rev-parse HEAD` differs from the cached
+      `metadata.json`'s `source_revision`; a project with no git repo
+      (`current_git_revision()` returns `None`) always rebuilds, since
+      there's no cheaper freshness signal available. 7 tests
+      (`tests/test_freshness.py`) against a real git subprocess, with a
+      fake in-memory indexer standing in for `DartAnalyzerIndexer` so no
+      Dart SDK is needed to run them.
+- [x] Wired into `TurnRunner`/context providers.
+      `context/providers.py::IndexProvider` hands the index's file
+      inventory to guided-retrieval roles as references (paths, not
+      content — the agent reads with its own tools, same as
+      `ReferencedFilesProvider`). `TurnRunner._current_index_revision()`
+      computes the real value every turn for a guided role with a
+      configured `project_source_root` + indexer, persists it to
+      `state.yaml`, and feeds it to `SessionManager.decide()` — the
+      `index_revision` boundary trigger is tested against a real indexer's
+      output for the first time, not just a synthetic string. Wired by
+      default in both `orchestrator/cli.py` and
+      `telegram_bot/handlers.py` (`project_source_root=entry.host_path`,
+      `indexer=DartAnalyzerIndexer()`) — inert for a non-Dart project or a
+      host with no Dart SDK, since `supports()`/failures degrade to "no
+      index" rather than breaking the turn. **Verified live**: a real
+      `TurnRunner`, a real toy Flutter-shaped git project, the real Dart
+      CLI — `state.yaml`'s `index_revision` held the project's actual
+      commit hash, and the turn's real `manifest.yaml` listed `lib/app.dart`
+      with `reason: present in the codebase index`. 6 new tests across
+      `test_providers.py`/`test_jobs.py`.
 - [ ] Resolved (not just AST) analysis — `calls`/`instantiates` edges,
       which need `flutter pub get` to have run and a real
       `AnalysisContextCollection`. Deliberately deferred: the plan itself
       frames this as slower, with unresolved/AST-only as the fast
       fallback — here it's the primary mode instead, since nothing yet
       needs a resolved call graph.
-- [ ] Not wired into `TurnRunner`/context providers yet. No `IndexProvider`
-      exists, and nothing sets `index_revision` in `state.yaml` (the field
-      `SessionManager.decide()` already reads and compares — untested
-      against a real index because there was never a real one to compare
-      until now).
-- [ ] `GraphifyIndexer` (non-Dart repos) — not started.
-- [ ] Freshness/incremental indexing by git commit
-      (`metadata.yaml: {tool, version, source_revision, generated_at}`,
-      `git diff --name-only` for incremental rebuilds) — not started.
-      `builder`/`reviewer`/`qa` are configured for guided context mode in
-      `agents.yaml` but still have no index to guide retrieval with.
+- [ ] Dependency expansion and relevance ranking — the other two things
+      named in the same plan sentence as "symbol+file retrieval."
+      `IndexProvider` ships the file inventory only; expanding a
+      referenced file to its own imports, or ranking the inventory against
+      the task text, are both deliberately not built rather than
+      half-built alongside it.
+- [ ] `GraphifyIndexer` (non-Dart repos) — not started. Lower priority for
+      this project's actual scope (Flutter/Dart) than the items above.
 
 ## Phase 5 — Engineering workflow (partially done, ahead of schedule)
 

@@ -10,6 +10,7 @@ from orchestrator.context.builder import BuildRequest
 from orchestrator.context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
+    IndexProvider,
     ProjectIdentityProvider,
     ReferencedFilesProvider,
     RecentTurnsProvider,
@@ -159,6 +160,49 @@ def test_summary_provider_is_scoped_to_the_current_workflow_state(tmp_path):
     store.write_summary("architecture", "unrelated state's summary")
     provider = SummaryProvider(store)
     assert provider.collect(make_request(workflow_state="planning")) == []
+
+
+# ---- IndexProvider ---------------------------------------------------------
+
+
+def test_index_provider_returns_nothing_before_any_index_exists(tmp_path):
+    store = ProjectStore(tmp_path)
+    assert IndexProvider(store).collect(make_request()) == []
+
+
+def test_index_provider_lists_files_from_a_saved_graph(tmp_path):
+    from indexing.freshness import save_graph
+    from indexing.port import IndexNode, IndexResult
+
+    store = ProjectStore(tmp_path)
+    save_graph(store.index_dir(), IndexResult(
+        nodes=(
+            IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),
+            IndexNode(id="lib/a.dart#A", kind="class", name="A", file="lib/a.dart", line=1),
+            IndexNode(id="lib/b.dart", kind="file", name="lib/b.dart", file="lib/b.dart", line=0),
+        ),
+        edges=(),
+    ))
+
+    items = IndexProvider(store).collect(make_request())
+
+    assert {i.key for i in items} == {"lib/a.dart", "lib/b.dart"}
+    assert all(i.is_reference for i in items)
+
+
+def test_index_provider_deduplicates_against_explicit_references(tmp_path):
+    from indexing.freshness import save_graph
+    from indexing.port import IndexNode, IndexResult
+
+    store = ProjectStore(tmp_path)
+    save_graph(store.index_dir(), IndexResult(
+        nodes=(IndexNode(id="lib/a.dart", kind="file", name="lib/a.dart", file="lib/a.dart", line=0),),
+        edges=(),
+    ))
+
+    items = IndexProvider(store).collect(make_request(referenced_paths=("lib/a.dart",)))
+
+    assert items == []
 
 
 # ---- ReferencedFilesProvider ------------------------------------------------

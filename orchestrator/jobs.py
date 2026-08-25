@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import artifact_versioning, summarizer
 from .approvals import parse_decision_blocks
@@ -32,6 +33,7 @@ from .context.denylist import ContextPolicy
 from .context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
+    IndexProvider,
     ProjectIdentityProvider,
     RecentTurnsProvider,
     RoleSoulProvider,
@@ -42,6 +44,7 @@ from .events import EventLog, EventType
 from .sessions import Session, SessionManager, SessionPolicy
 from .state_machine import State, WorkflowDefinition
 from .store import ProjectStore
+from indexing.port import CodebaseIndexer
 
 try:
     from runtime.hermes import HermesRequest, HermesResult
@@ -91,6 +94,8 @@ class TurnRunner:
         estimator: TokenEstimator | None = None,
         session_policy: SessionPolicy | None = None,
         runtime_url: str | None = None,
+        project_source_root: Path | str | None = None,
+        indexer: CodebaseIndexer | None = None,
     ):
         self.project_id = project_id
         self.store = store
@@ -108,6 +113,13 @@ class TurnRunner:
         # route the same call through runtime/server.py over HTTP instead,
         # for the real orchestrator/agent-runtime container split.
         self.runtime_url = runtime_url
+        # None (the default) means no codebase index at all -- guided roles
+        # get whatever ReferencedFilesProvider was told explicitly and
+        # nothing more, exactly today's behavior. Set both to opt in:
+        # project_source_root is the project's actual source tree (NOT
+        # agent-state), which nothing before Phase 4 needed to know at all.
+        self.project_source_root = Path(project_source_root) if project_source_root else None
+        self.indexer = indexer
 
     # ---- turn id / bookkeeping -------------------------------------------
 
@@ -151,6 +163,9 @@ class TurnRunner:
         )
         self.store.append_conversation_turn(workflow_state_name, "human", human_message)
 
+        current_index_revision = self._current_index_revision(role_cfg)
+        self.store.update_state(index_revision=current_index_revision)
+
         existing_session = self._load_session(state_data)
         decision = self.session_manager.decide(
             session=existing_session,
@@ -158,13 +173,14 @@ class TurnRunner:
             role=role,
             artifact_revision=int(state_data.get("artifact_revision", 0)),
             decision_revision=self._decision_revision(),
-            index_revision=state_data.get("index_revision"),
+            index_revision=current_index_revision,
         )
 
         package = self._build_context(
             role=role, role_cfg=role_cfg, state=state,
             workflow_state_name=workflow_state_name, task=human_message,
             decision=decision, turn_id=turn_id,
+            index_revision=current_index_revision,
         )
         self.store.write_turn_artifact(turn_id, "prompt.md", package.prompt)
         self.store.write_turn_artifact(turn_id, "manifest.yaml", package.to_yaml())
@@ -195,6 +211,7 @@ class TurnRunner:
         session = self._update_session(
             existing_session=existing_session, decision=decision, state=state,
             role=role, result=result, turn_id=turn_id, state_data=state_data,
+            index_revision=current_index_revision,
         )
 
         if result.failed:
@@ -226,7 +243,7 @@ class TurnRunner:
             return 0
         return len(list(d.glob("*.md")))
 
-    def _build_context(self, *, role, role_cfg, state, workflow_state_name, task, decision, turn_id):
+    def _build_context(self, *, role, role_cfg, state, workflow_state_name, task, decision, turn_id, index_revision):
         providers = [
             RoleSoulProvider(self.souls_dir),
             ProjectIdentityProvider(self.store, self.project_id),
@@ -235,6 +252,11 @@ class TurnRunner:
             SummaryProvider(self.store),
             RecentTurnsProvider(self.store, count=3),
         ]
+        if role_cfg.context_mode == "guided":
+            # A raw file inventory is only useful to a role reading with its
+            # own tools -- an assembled-mode role (planner, architect) has
+            # no toolset to act on a bare path list with.
+            providers.append(IndexProvider(self.store))
         builder = ContextBuilder(providers, self.estimator)
         policy = ContextPolicy(
             role=role, allowlist=role_cfg.allowlist, denylist=role_cfg.denylist,
@@ -247,6 +269,7 @@ class TurnRunner:
             resumed_from=decision.session_id if decision.resume else None,
             read_budget=role_cfg.read_budget,
             artifact_name=state.artifact,
+            index_revision=index_revision,
         )
         return builder.build(request, policy)
 
@@ -319,7 +342,33 @@ class TurnRunner:
                 payload={"commit": commit_hash},
             )
 
-    def _update_session(self, *, existing_session, decision, state, role, result, turn_id, state_data):
+    def _current_index_revision(self, role_cfg) -> str | None:
+        """The codebase index's current source revision for a guided role,
+        or None when there's nothing to index (no project source
+        configured, an assembled-mode role that wouldn't use it, or an
+        indexer that doesn't support this project -- e.g. no pubspec.yaml).
+
+        Best-effort: an indexer failure (e.g. the Dart SDK isn't installed
+        where this runs) degrades to "no index" rather than failing the
+        turn -- an index is a retrieval aid, not a hard requirement for a
+        turn to proceed.
+        """
+        if self.project_source_root is None or self.indexer is None:
+            return None
+        if role_cfg.context_mode != "guided":
+            return None
+        if not self.indexer.supports(self.project_source_root):
+            return None
+
+        from indexing.freshness import ensure_fresh
+
+        try:
+            _, revision = ensure_fresh(self.indexer, self.project_source_root, self.store.index_dir())
+        except Exception:
+            return None
+        return revision
+
+    def _update_session(self, *, existing_session, decision, state, role, result, turn_id, state_data, index_revision):
         if decision.resume and existing_session is not None:
             session = self.session_manager.record_turn(existing_session, failed=result.failed)
         else:
@@ -333,7 +382,7 @@ class TurnRunner:
                 role=role, state=state.name, turn_id=turn_id,
                 artifact_revision=int(state_data.get("artifact_revision", 0)),
                 decision_revision=self._decision_revision(),
-                index_revision=state_data.get("index_revision"),
+                index_revision=index_revision,
             )
             self.events.emit(
                 EventType.SESSION_OPENED, session_id=session.hermes_session_id,
