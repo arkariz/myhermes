@@ -106,6 +106,18 @@ def build_argv(request: HermesRequest, *, usage_file: Path | None) -> list[str]:
             "--resume", request.resume_session_id,
             "--provider", request.provider,
             "--model", request.model,
+            # Hermes remembers the working directory a session was FIRST
+            # opened in and, by default, cd's back into it on every resume
+            # -- silently overriding whatever `cwd` this call actually
+            # started the subprocess in. Found live: a resumed session
+            # opened before this module set `cwd` at all kept restoring
+            # `/app` (the container's bare WORKDIR) on every later turn,
+            # so a role's file writes landed in a directory that gets
+            # thrown away the moment the container restarts, even though
+            # the subprocess's own cwd was by then set correctly. Our own
+            # `cwd` (computed fresh, every turn, from the project's real
+            # state) must always win over Hermes's stale historical guess.
+            "--no-restore-cwd",
         ]
     else:
         argv = [

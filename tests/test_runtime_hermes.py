@@ -100,6 +100,25 @@ def test_provider_and_model_are_always_explicit_on_continuation_turn():
     assert "--model" in argv and "x/y" in argv
 
 
+def test_continuation_turn_never_restores_hermes_own_recorded_cwd():
+    # Regression test: Hermes remembers the working directory a session
+    # was FIRST opened in and, by default, cd's back into it on every
+    # resume -- silently overriding whatever `cwd` this call actually
+    # started the subprocess in. Found live: a session opened before this
+    # module set `cwd` at all kept restoring `/app` on every later turn,
+    # so a role's file writes landed in a directory that gets thrown away
+    # the moment the container restarts.
+    argv = build_argv(make_request(resume_session_id="sid-1"), usage_file=None)
+    assert "--no-restore-cwd" in argv
+
+
+def test_full_turn_has_no_restore_cwd_flag_to_worry_about():
+    # -z never resumes anything, so there is nothing to restore -- the
+    # flag simply doesn't apply on this path.
+    argv = build_argv(make_request(), usage_file=None)
+    assert "--no-restore-cwd" not in argv
+
+
 def test_usage_export_argv_targets_the_right_session():
     argv = build_usage_export_argv("sid-42")
     assert argv[:3] == ["hermes", "sessions", "export"]
