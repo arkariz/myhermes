@@ -122,6 +122,35 @@ class DecisionsProvider:
         return items
 
 
+class SummaryProvider:
+    """The running summary for this workflow state -- summarizer.py's own
+    output (brief S17.3).
+
+    Layer 4, alongside recent turns: the brief's own cache-layout diagram
+    groups "recent summary, recent turns, current human request" together.
+    Placed at a slightly lower volatility than raw recent turns (5 vs 6)
+    since a summary is rewritten incrementally each turn rather than being
+    wholesale-replaced -- in practice closer to stable than a brand new
+    message is.
+    """
+
+    name = "summary"
+
+    def __init__(self, store: ProjectStore):
+        self.store = store
+
+    def collect(self, request: BuildRequest) -> list[ContextItem]:
+        content = self.store.read_summary(request.workflow_state)
+        if not content:
+            return []
+        return [ContextItem(
+            key=f"summaries/{request.workflow_state}.md",
+            layer=4, priority=6, volatility=5,
+            reason="running summary carried across session boundaries",
+            content=content,
+        )]
+
+
 class RecentTurnsProvider:
     """The last N raw conversation turns for the current workflow state.
 

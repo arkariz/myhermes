@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import orchestrator.jobs as jobs_module  # noqa: E402
+import orchestrator.summarizer as summarizer_module  # noqa: E402
 from orchestrator.approvals import PendingAction, resolve_command  # noqa: E402
 from orchestrator.config import AgentsConfig, ModelsConfig  # noqa: E402
 from orchestrator.context.builder import BuildRequest, ContextBuilder  # noqa: E402
@@ -94,6 +95,18 @@ def run_ours(state_root: Path) -> list[dict]:
         agents=agents, models=models, souls_dir=str(SOULS_DIR),
     )
     estimator = runner.estimator
+
+    # config/models.yaml routes a real "summarizer" role -- TurnRunner calls
+    # it after every successful turn (orchestrator/summarizer.py). Mock it
+    # the same way as the main hermes_run below, or this benchmark would try
+    # to launch a real (and here, absent) hermes binary purely as a side
+    # effect of using the real config.
+    def fake_summary(request, usage_file=None):
+        return HermesResult(
+            response="(benchmark summary placeholder)",
+            usage={"failed": False}, exit_code=0, session_id=None,
+        )
+    summarizer_module.hermes_run = fake_summary
 
     responses = iter(step for step in SCENARIO if isinstance(step, Turn))
     results: list[dict] = []

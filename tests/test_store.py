@@ -97,3 +97,22 @@ def test_hermes_home_differs_across_projects(tmp_path):
     store_a = ProjectStore(tmp_path / "project-a")
     store_b = ProjectStore(tmp_path / "project-b")
     assert store_a.hermes_home() != store_b.hermes_home()
+
+
+def test_summary_round_trips(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.write_summary("planning", "Decided X, still open: Y.")
+    assert store.read_summary("planning") == "Decided X, still open: Y."
+
+
+def test_summary_missing_returns_none(tmp_path):
+    store = ProjectStore(tmp_path)
+    assert store.read_summary("planning") is None
+
+
+def test_summary_is_independent_per_workflow_state(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.write_summary("discovery", "discovery summary")
+    store.write_summary("planning", "planning summary")
+    assert store.read_summary("discovery") == "discovery summary"
+    assert store.read_summary("planning") == "planning summary"

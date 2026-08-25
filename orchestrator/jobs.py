@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from . import summarizer
 from .approvals import parse_decision_blocks
 from .config import AgentsConfig, ModelsConfig
 from .context.builder import BuildRequest, ContextBuilder
@@ -34,6 +35,7 @@ from .context.providers import (
     ProjectIdentityProvider,
     RecentTurnsProvider,
     RoleSoulProvider,
+    SummaryProvider,
 )
 from .context.tokens import TokenEstimator
 from .events import EventLog, EventType
@@ -194,6 +196,9 @@ class TurnRunner:
                 workflow_state=workflow_state_name, failed=True,
             )
 
+        if "summarizer" in self.models.routes:
+            self._update_summary(workflow_state_name, turn_id, human_message, result.response)
+
         self.store.update_state(attempts=0)
         return TurnOutcome(
             turn_id=turn_id, response=result.response, session=session,
@@ -214,6 +219,7 @@ class TurnRunner:
             ProjectIdentityProvider(self.store, self.project_id),
             ArtifactSectionProvider(self.store),
             DecisionsProvider(self.store),
+            SummaryProvider(self.store),
             RecentTurnsProvider(self.store, count=3),
         ]
         builder = ContextBuilder(providers, self.estimator)
@@ -256,6 +262,20 @@ class TurnRunner:
             self.store.decisions_dir().mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding="utf-8")
             self.events.emit(EventType.DECISION_RECORDED, payload={"id": decision_id})
+
+    def _update_summary(self, workflow_state: str, turn_id: str, human_message: str, agent_response: str) -> None:
+        """Best-effort: a failed summarization call is logged as itself
+        failing, never as this turn failing -- the turn already succeeded
+        by the time this runs."""
+        route = self.models.get("summarizer")
+        result = summarizer.update_summary(
+            self.store, workflow_state, route,
+            human_message=human_message, agent_response=agent_response,
+        )
+        if not result.failed:
+            self.events.emit(
+                EventType.SUMMARY_UPDATED, workflow_state=workflow_state, turn_id=turn_id,
+            )
 
     def _update_session(self, *, existing_session, decision, state, role, result, turn_id, state_data):
         if decision.resume and existing_session is not None:

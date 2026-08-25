@@ -230,3 +230,78 @@ def test_decision_block_in_response_is_recorded(monkeypatch, runner):
     decision_file = runner.store.decisions_dir() / "001-scope.md"
     assert decision_file.exists()
     assert "Single-child MVP" in decision_file.read_text()
+
+
+# ---- summarization (orchestrator/summarizer.py) -----------------------------
+
+
+MODELS_YAML_WITH_SUMMARIZER = MODELS_YAML + """
+  summarizer: {provider: openrouter, model: deepseek/deepseek-v3}
+"""
+
+
+@pytest.fixture
+def runner_with_summarizer(tmp_path):
+    (tmp_path / "workflow.yaml").write_text(WORKFLOW_YAML)
+    (tmp_path / "agents.yaml").write_text(AGENTS_YAML)
+    (tmp_path / "models.yaml").write_text(MODELS_YAML_WITH_SUMMARIZER)
+    (tmp_path / "souls").mkdir()
+    (tmp_path / "souls" / "planner.md").write_text("You are the planner.")
+
+    store = ProjectStore(tmp_path / "agent-state")
+    workflow = WorkflowDefinition.load(tmp_path / "workflow.yaml")
+    agents = AgentsConfig.load(tmp_path / "agents.yaml")
+    models = ModelsConfig.load(tmp_path / "models.yaml")
+    return TurnRunner(
+        project_id="toy", store=store, workflow=workflow, agents=agents,
+        models=models, souls_dir=str(tmp_path / "souls"),
+    )
+
+
+def test_no_summarizer_route_means_no_summary_file(monkeypatch, runner):
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    runner.run_turn("Build a habit tracker.")
+    assert runner.store.read_summary("planning") is None
+
+
+def test_summarizer_route_present_updates_the_summary(monkeypatch, runner_with_summarizer):
+    import orchestrator.summarizer as summarizer_module
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: HermesResult(
+        response="Summary: building a habit tracker.", usage={"failed": False},
+        exit_code=0, session_id=None,
+    ))
+
+    runner_with_summarizer.run_turn("Build a habit tracker.")
+
+    assert runner_with_summarizer.store.read_summary("planning") == (
+        "Summary: building a habit tracker."
+    )
+
+
+def test_summarizer_is_not_called_when_the_main_turn_fails(monkeypatch, runner_with_summarizer):
+    import orchestrator.summarizer as summarizer_module
+
+    called = []
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: called.append(1))
+
+    runner_with_summarizer.run_turn("Build a habit tracker.")
+
+    assert called == []
+    assert runner_with_summarizer.store.read_summary("planning") is None
+
+
+def test_summarizer_failure_does_not_fail_the_turn(monkeypatch, runner_with_summarizer):
+    import orchestrator.summarizer as summarizer_module
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="The PRD text."))
+    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: HermesResult(
+        response="", usage={"failed": True}, exit_code=1, session_id=None,
+    ))
+
+    outcome = runner_with_summarizer.run_turn("Build a habit tracker.")
+
+    assert outcome.failed is False
+    assert outcome.response == "The PRD text."

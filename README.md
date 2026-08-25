@@ -18,7 +18,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-208/208 tests pass. The test suite is the actual specification of the
+226/226 tests pass. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
 
 ### Two real bugs the spike found, both fixed
@@ -75,6 +75,7 @@ Provider-side prompt caching was confirmed working as designed (non-zero
 | `orchestrator/jobs.py` | `TurnRunner` — one full turn, wired end to end, verified live |
 | `orchestrator/cli.py` | `project new` / `turn` / `approve` / `status`, verified live end to end |
 | `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
+| `orchestrator/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
 | `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
 
@@ -107,6 +108,29 @@ unit test) → a fresh planning turn → `approve APPROVE_PRD`. Every state
 transition, every session open/resume/invalidate, and the exact-typed-
 approval rejection (a wrong approval type was correctly refused, exit 1)
 behaved exactly as designed.
+
+## Incremental summarization (§17.3)
+
+The one piece of Phase 1's original Step 6 that was scoped but never built
+until now: `orchestrator/summarizer.py`. After every successful turn (not
+just at boundaries -- conditioning it on `SessionManager`'s own boundary
+decision would couple two things that don't need to know about each other,
+and it's one cheap call on a cheap model, `config/models.yaml` routes
+`summarizer` to `deepseek-v3`), `TurnRunner` folds the new turn into a
+running per-state summary: `summarize(previous_summary + new_turn)`,
+preserving decisions, open questions, constraints, rejected alternatives,
+artifact status, and next actions. `context/providers.py::SummaryProvider`
+then feeds that summary into every later context build (layer 4, alongside
+recent turns, per the brief's own cache-layout grouping).
+
+This is what a session boundary actually loses without it: `SESSION_
+INVALIDATED` means the next turn's rebuild has nothing but the artifact and
+whatever raw conversation still fits in `RecentTurnsProvider`'s
+3-turn window. The summary is what carries continuity across that reset
+instead of relying on an opaque, now-discarded Hermes transcript. Optional
+by construction — a project whose `models.yaml` has no `summarizer` route
+just never calls this, same "absent config, unchanged behavior" pattern as
+Telegram's forum-topic auto-creation.
 
 ## Benchmark: does the context/session design actually help?
 

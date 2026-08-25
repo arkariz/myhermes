@@ -14,6 +14,7 @@ from orchestrator.context.providers import (
     ReferencedFilesProvider,
     RecentTurnsProvider,
     RoleSoulProvider,
+    SummaryProvider,
 )
 from orchestrator.store import ProjectStore
 
@@ -132,6 +133,32 @@ def test_recent_turns_provider_is_scoped_to_the_current_workflow_state(tmp_path)
     provider = RecentTurnsProvider(store)
     items = provider.collect(make_request(workflow_state="planning"))
     assert items == []
+
+
+# ---- SummaryProvider -----------------------------------------------------
+
+
+def test_summary_provider_reads_the_current_states_summary(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.write_summary("planning", "Decided X. Open question: Y.")
+    provider = SummaryProvider(store)
+    items = provider.collect(make_request(workflow_state="planning"))
+    assert items[0].content == "Decided X. Open question: Y."
+    assert items[0].key == "summaries/planning.md"
+    assert items[0].layer == 4
+
+
+def test_summary_provider_returns_nothing_before_any_summary_exists(tmp_path):
+    store = ProjectStore(tmp_path)
+    provider = SummaryProvider(store)
+    assert provider.collect(make_request()) == []
+
+
+def test_summary_provider_is_scoped_to_the_current_workflow_state(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.write_summary("architecture", "unrelated state's summary")
+    provider = SummaryProvider(store)
+    assert provider.collect(make_request(workflow_state="planning")) == []
 
 
 # ---- ReferencedFilesProvider ------------------------------------------------

@@ -157,6 +157,15 @@ class ProjectStore:
 
     # ---- turns -----------------------------------------------------------
 
+    def read_summary(self, name: str) -> str | None:
+        path = self.summary_file(name)
+        return path.read_text(encoding="utf-8") if path.exists() else None
+
+    def write_summary(self, name: str, content: str) -> Path:
+        path = self.summary_file(name)
+        _atomic_write(path, content)
+        return path
+
     def write_turn_artifact(self, turn_id: str, filename: str, content: str) -> Path:
         path = self.turn_dir(turn_id) / filename
         _atomic_write(path, content)
