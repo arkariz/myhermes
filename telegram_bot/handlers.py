@@ -308,8 +308,16 @@ async def _process_turn_job(app: Application, job: TurnJob) -> None:
     state_data = runner.store.read_state()
     state = runner.workflow.get(state_data.get("workflow_state", runner.workflow.initial))
 
+    # Only offer Approve on a turn that actually succeeded -- state.requires_approval
+    # reflects the CURRENT workflow state (e.g. "discovery" is still an
+    # approval-gated state regardless of whether this particular turn
+    # produced anything), not whether this turn's output is worth approving.
+    # A failed turn leaving the state unchanged still passed that check, so
+    # the button showed up next to an empty/error response -- clicking it
+    # would advance the workflow on top of nothing. Found live: exactly
+    # this, after a turn failed on a rate-limited free-tier model.
     reply_markup = None
-    if state.requires_approval and state.runs_agent:
+    if not outcome.failed and state.requires_approval and state.runs_agent:
         token = secrets.token_hex(4)
         app.bot_data["callback_table"][token] = CallbackPayload(
             project_id=job.project_id, approval_type=state.approval_type,
@@ -319,10 +327,15 @@ async def _process_turn_job(app: Application, job: TurnJob) -> None:
             InlineKeyboardButton(f"Approve ({state.approval_type})", callback_data=token),
         ]])
 
-    prefix = "[turn failed] " if outcome.failed else ""
+    if outcome.failed:
+        reason = outcome.failure_reason or "no reason reported"
+        text = f"[turn failed] {reason}"
+    else:
+        text = outcome.response
+
     await app.bot.send_message(
         chat_id=job.chat_id, message_thread_id=job.thread_id,
-        text=f"{prefix}{outcome.response}", reply_markup=reply_markup,
+        text=text, reply_markup=reply_markup,
     )
 
 

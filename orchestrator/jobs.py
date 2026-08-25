@@ -73,6 +73,13 @@ class TurnOutcome:
     failed: bool
     next_workflow_state: str | None = None  # set only when this turn's
                                              # completion also advanced state
+    failure_reason: str | None = None  # e.g. Hermes's own "No LLM provider
+                                        # configured" / a 429 rate-limit
+                                        # message -- `response` is often
+                                        # empty on failure (no stdout to
+                                        # show), so this is the only place
+                                        # the actual reason survives for a
+                                        # caller (CLI, Telegram) to display
 
 
 class TurnRunner:
@@ -224,6 +231,7 @@ class TurnRunner:
             return TurnOutcome(
                 turn_id=turn_id, response=result.response, session=session,
                 workflow_state=workflow_state_name, failed=True,
+                failure_reason=result.usage.get("failure") if result.usage else None,
             )
 
         if "summarizer" in self.models.routes:

@@ -135,6 +135,8 @@ def cmd_turn(args: argparse.Namespace) -> int:
 
     print(f"[{outcome.turn_id}] ({'FAILED' if outcome.failed else 'ok'})")
     print(outcome.response)
+    if outcome.failed and outcome.failure_reason:
+        print(f"reason: {outcome.failure_reason}", file=sys.stderr)
     return 1 if outcome.failed else 0
 
 

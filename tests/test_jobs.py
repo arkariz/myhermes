@@ -190,6 +190,17 @@ def test_failed_turn_increments_attempts_without_advancing(monkeypatch, runner):
     assert runner.store.read_state()["attempts"] == 1
 
 
+def test_failed_turn_carries_the_real_failure_reason(monkeypatch, runner):
+    # response is often empty on a real failure (no stdout to show) --
+    # failure_reason is the only place a caller (CLI, Telegram) can find
+    # out WHY, e.g. a 429 rate limit vs. a misconfigured provider.
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
+    outcome = runner.run_turn("Build a habit tracker.")
+
+    assert outcome.failed is True
+    assert outcome.failure_reason == "boom"
+
+
 def test_successful_turn_resets_attempts(monkeypatch, runner):
     monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
     runner.run_turn("try 1")

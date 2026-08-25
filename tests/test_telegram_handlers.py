@@ -284,6 +284,40 @@ async def test_process_turn_job_sends_the_response_and_attaches_approve_button(
     assert bot_data["callback_table"][token].approval_type == "APPROVE_PRD"
 
 
+def _fake_hermes_failure(failure="rate limit exceeded (429)"):
+    def _run(request, usage_file=None):
+        return HermesResult(
+            response="", usage={"failed": True, "failure": failure},
+            exit_code=1, session_id=None,
+        )
+    return _run
+
+
+@pytest.mark.asyncio
+async def test_process_turn_job_does_not_offer_approval_on_a_failed_turn(
+    bot_data, tmp_path, monkeypatch,
+):
+    """Regression test: state.requires_approval reflects the CURRENT
+    workflow state, not whether THIS turn produced anything -- a failed
+    turn leaves the state unchanged, so without this check the Approve
+    button showed up next to an empty/error response. Found live after a
+    turn failed on a rate-limited free-tier model."""
+    _new_project(bot_data, tmp_path)
+    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes_failure())
+    app = make_app(bot_data)
+    job = handlers.TurnJob(
+        project_id="toy", chat_id=100, thread_id=None,
+        human_message="Build a habit tracker.",
+    )
+
+    await handlers._process_turn_job(app, job)
+
+    kwargs = app.bot.send_message.await_args.kwargs
+    assert kwargs["reply_markup"] is None
+    assert "rate limit exceeded (429)" in kwargs["text"]
+    assert "[turn failed]" in kwargs["text"]
+
+
 @pytest.mark.asyncio
 async def test_inbox_worker_drains_the_queue_and_survives_a_failed_job(bot_data, tmp_path, monkeypatch):
     _new_project(bot_data, tmp_path)
