@@ -58,6 +58,33 @@ services:
       TELEGRAM_FORUM_CHAT_ID: ${TELEGRAM_FORUM_CHAT_ID:-}
       TELEGRAM_DEFAULT_HOST_ROOT: ${TELEGRAM_DEFAULT_HOST_ROOT:-/workspace/projects}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # config/models.yaml's own ${VAR:-default} placeholders are resolved
+      # by orchestrator/config.py reading THIS container's environment --
+      # docker compose does NOT auto-forward every .env variable into a
+      # service, only ones named here. Without these seven lines, a model
+      # override in .env silently has no effect under Compose (it still
+      # works in host/CLI mode, since there the shell's own env IS what
+      # config.py reads) -- found live while walking through exactly this
+      # "switch to a free model" scenario.
+      #
+      # The defaults duplicate config/models.yaml's own -- NOT `${VAR:-}`.
+      # Compose's own substitution runs against the HOST's environment at
+      # `up`/`run` time; if PLANNER_MODEL is unset there, `${VAR:-}`
+      # resolves to an empty STRING, which still gets forwarded as
+      # `PLANNER_MODEL=` (present, just empty). config.py's own
+      # `os.environ.get(var, default)` then returns that empty string
+      # instead of falling back, because the key exists at all -- silently
+      # breaking every role's default model for anyone who doesn't
+      # override it. Confirmed live before shipping this. Two sources of
+      # truth for the same default is the tradeoff for not introducing a
+      # templating dependency just to say "forward this only if set."
+      PLANNER_MODEL: ${PLANNER_MODEL:-anthropic/claude-sonnet-4.6}
+      DESIGNER_MODEL: ${DESIGNER_MODEL:-anthropic/claude-sonnet-4.6}
+      ARCHITECT_MODEL: ${ARCHITECT_MODEL:-anthropic/claude-sonnet-4.6}
+      BUILDER_MODEL: ${BUILDER_MODEL:-deepseek/deepseek-v3}
+      REVIEWER_MODEL: ${REVIEWER_MODEL:-deepseek/deepseek-v3}
+      QA_MODEL: ${QA_MODEL:-deepseek/deepseek-v3}
+      SUMMARIZER_MODEL: ${SUMMARIZER_MODEL:-deepseek/deepseek-v3}
     volumes:
       - ./config:/app/config
       - ${AGENT_STATE_DIR:-./data/agent-state}:/workspace/agent-state
