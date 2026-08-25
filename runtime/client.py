@@ -50,6 +50,7 @@ def run(
         "skills": request.skills,
         "resume_session_id": request.resume_session_id,
         "usage_file": str(usage_file) if usage_file else None,
+        "cwd": str(request.cwd) if request.cwd else None,
     }
 
     try:

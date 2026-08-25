@@ -122,6 +122,30 @@ def test_toolsets_and_skills_are_optional():
     assert "--skills" in full and "flutter" in full
 
 
+def test_yolo_is_added_only_when_toolsets_are_granted():
+    # Regression test: without --yolo, a role with e.g. `files`/`terminal`
+    # granted hits Hermes's own interactive tool-call approval prompt --
+    # no TTY to answer it in a non-interactive subprocess, so the call
+    # just hangs until the caller's own timeout gives up. Found live: a
+    # turn that should have taken seconds instead ran until a real 600s
+    # ReadTimeout the first time a `files`-toolset role actually tried to
+    # use its tool for real (every prior live test had hermes_run mocked,
+    # so this was never exercised against the real binary before).
+    bare = build_argv(make_request(), usage_file=Path("u.json"))
+    assert "--yolo" not in bare  # no toolsets granted -- nothing to approve
+
+    full = build_argv(
+        make_request(toolsets="files"), usage_file=Path("u.json"),
+    )
+    assert "--yolo" in full
+
+    continuation = build_argv(
+        make_request(toolsets="terminal,files", resume_session_id="sid-1"),
+        usage_file=None,
+    )
+    assert "--yolo" in continuation
+
+
 # ---- environment: the isolation boundary -------------------------------
 
 
@@ -249,6 +273,39 @@ def test_run_full_turn_response_is_raw_stdout(tmp_path):
     assert result.response == "The actual response."
     assert result.session_id == "sid-1"
     assert result.failed is False
+
+
+def test_run_passes_cwd_to_the_subprocess(tmp_path):
+    # Where the agent's own file/terminal tool calls resolve relative
+    # paths -- must match what the rendered prompt tells it about
+    # ("artifacts/prd.md"), or a role granted the `files` toolset still
+    # has nowhere correct to write. Found live: nothing set this at all.
+    captured = {}
+    target_cwd = tmp_path / "project-state"
+
+    def fake_runner(argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeCompletedProcess(stdout="ok")
+
+    run(
+        make_request(home_dir=tmp_path / ".hermes-home", cwd=target_cwd),
+        runner=fake_runner,
+    )
+
+    assert captured["cwd"] == target_cwd
+    assert target_cwd.is_dir()  # created if it doesn't exist yet
+
+
+def test_run_with_no_cwd_leaves_it_unset(tmp_path):
+    captured = {}
+
+    def fake_runner(argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeCompletedProcess(stdout="ok")
+
+    run(make_request(home_dir=tmp_path / ".hermes-home"), runner=fake_runner)
+
+    assert captured["cwd"] is None
 
 
 def test_run_continuation_turn_strips_banner_noise(tmp_path):

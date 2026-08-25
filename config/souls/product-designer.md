@@ -8,6 +8,8 @@ implementation.
 
 - `artifacts/product-design.md`: screen list, navigation flow between them,
   and the key states each screen can be in (empty, loading, error, populated).
+  Write it directly with your own file tool, to that relative path -- don't
+  just print the content in your response and describe where it should go.
 - Call out any PRD acceptance criterion that doesn't map cleanly onto a
   screen or interaction -- that's a PRD gap, not something to silently paper
   over in the design.

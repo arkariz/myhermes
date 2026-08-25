@@ -290,6 +290,24 @@ class TurnRunner:
         )
         return builder.build(request, policy)
 
+    def _hermes_cwd(self, role_cfg) -> Path | None:
+        """Where the agent's own file/terminal tool calls resolve relative
+        paths -- must match what the rendered prompt tells it about
+        (`artifacts/prd.md`, `lib/app.dart`), or a role with the `files`
+        toolset granted still has nowhere correct to write. Found live: a
+        role given the tool with no cwd set had no connection at all
+        between "the path in the prompt" and "where its own write landed."
+
+        Guided-mode roles (builder/reviewer/qa) work over the project's
+        own source tree. Assembled-mode document roles (planner/
+        product-designer/architect) work over this project's own
+        agent-state tree, where `artifacts/` actually lives -- see
+        `ProjectStore.artifact()`.
+        """
+        if role_cfg.context_mode == "guided":
+            return self.project_source_root  # None if not configured -- degrades
+        return self.store.root               # to the prior "inherit default" behavior
+
     def _invoke_hermes(self, *, package_prompt, route, role_cfg, decision, turn_id):
         request = HermesRequest(
             prompt=package_prompt,
@@ -298,6 +316,7 @@ class TurnRunner:
             model=route.model,
             toolsets=",".join(role_cfg.toolsets) if role_cfg.toolsets else None,
             resume_session_id=decision.session_id if decision.resume else None,
+            cwd=self._hermes_cwd(role_cfg),
         )
         usage_file = self.store.turn_dir(turn_id) / "usage.json" if not decision.resume else None
 

@@ -69,6 +69,31 @@ def test_run_passes_usage_file_and_resume_session_id(monkeypatch, tmp_path):
     assert captured["payload"]["usage_file"] == str(tmp_path / "usage.json")
 
 
+def test_run_passes_cwd(monkeypatch, tmp_path):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as jsonlib
+        captured["payload"] = jsonlib.loads(request.read())
+        return httpx.Response(200, json={
+            "response": "ok", "usage": {"failed": False}, "exit_code": 0,
+            "session_id": "sess-1", "failed": False,
+        })
+
+    monkeypatch.setattr(
+        httpx, "post",
+        lambda url, json, timeout: _client_with(handler).post(url, json=json),
+    )
+
+    target_cwd = tmp_path / "project-state"
+    request = HermesRequest(
+        prompt="hi", home_dir=tmp_path, provider="openrouter", model="m", cwd=target_cwd,
+    )
+    run(request, base_url="http://x")
+
+    assert captured["payload"]["cwd"] == str(target_cwd)
+
+
 def test_run_raises_on_network_error(monkeypatch, tmp_path):
     def raise_error(url, json, timeout):
         raise httpx.ConnectError("connection refused")

@@ -85,10 +85,21 @@ def test_artifact_provider_returns_nothing_without_an_artifact_name(tmp_path):
     assert provider.collect(make_request()) == []
 
 
-def test_artifact_provider_returns_nothing_when_the_file_does_not_exist_yet(tmp_path):
+def test_artifact_provider_still_names_the_target_path_before_it_exists(tmp_path):
+    # Regression test: this used to return [] here, leaving a role with no
+    # way to learn the target filename except the soul file's own prose
+    # (the same soul reused across every state a role holds, saying
+    # nothing about which state's artifact applies THIS turn). Found live:
+    # a first-turn response that never wrote anything, reasoning at length
+    # about not knowing where its output was supposed to go.
     store = ProjectStore(tmp_path)
     provider = ArtifactSectionProvider(store)
-    assert provider.collect(make_request(artifact_name="prd.md")) == []
+    items = provider.collect(make_request(artifact_name="prd.md"))
+
+    assert len(items) == 1
+    assert items[0].key == "artifacts/prd.md"
+    assert items[0].is_reference  # no content to embed, just the path
+    assert "not created yet" in items[0].reason
 
 
 # ---- DecisionsProvider -------------------------------------------------

@@ -47,6 +47,8 @@ class RunRequest(BaseModel):
     skills: str | None = None
     resume_session_id: str | None = None
     usage_file: str | None = None  # ignored when resume_session_id is set
+    cwd: str | None = None  # see HermesRequest.cwd -- where the agent's own
+                             # file/terminal tool calls resolve relative paths
 
 
 class RunResponse(BaseModel):
@@ -78,6 +80,7 @@ def run(payload: RunRequest) -> RunResponse:
         toolsets=payload.toolsets,
         skills=payload.skills,
         resume_session_id=payload.resume_session_id,
+        cwd=Path(payload.cwd) if payload.cwd else None,
     )
     usage_file = Path(payload.usage_file) if payload.usage_file else None
 

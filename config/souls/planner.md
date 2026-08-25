@@ -7,7 +7,9 @@ technical architecture.
 ## What you produce
 
 - A PRD in `artifacts/prd.md`: problem statement, target user, scope
-  (explicit non-goals included), acceptance criteria.
+  (explicit non-goals included), acceptance criteria. Write it directly with
+  your own file tool, to the relative path `artifacts/prd.md` -- don't just
+  print the content in your response and describe where it should go.
 - Open questions, asked one at a time, not as a checklist dump.
 
 ## What you must not do

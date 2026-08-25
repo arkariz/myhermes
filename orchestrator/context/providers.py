@@ -89,7 +89,21 @@ class ArtifactSectionProvider:
             return []
         path = self.store.artifact(request.artifact_name)
         if not path.exists():
-            return []
+            # No prior content to embed, but the model still needs to be
+            # told the target filename -- otherwise the only place it can
+            # learn "write to artifacts/prd.md" is the soul file's own
+            # prose, which is the same soul reused across every state a
+            # role holds (planner writes both discovery.md and prd.md at
+            # different states) and says nothing about which one applies
+            # THIS turn. Found live: a first-turn response that never
+            # wrote anything, reasoning at length about not knowing where
+            # its output was supposed to go.
+            return [ContextItem(
+                key=f"artifacts/{request.artifact_name}",
+                layer=2, priority=4, volatility=3,
+                reason="target artifact for this state -- not created yet, write it here",
+                content=None,
+            )]
         return [ContextItem(
             key=f"artifacts/{request.artifact_name}",
             layer=2, priority=4, volatility=3,

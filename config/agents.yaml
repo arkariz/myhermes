@@ -15,30 +15,49 @@ defaults:
   context_mode: assembled
 
 roles:
+  # planner/product-designer/architect all get `file` so they can write
+  # their artifact (artifacts/prd.md etc.) directly -- assembled context
+  # mode governs how they READ (pre-assembled content, no exploring), which
+  # is a separate axis from whether they can WRITE their own output.
+  # TurnRunner sets their cwd to the project's agent-state root (see
+  # jobs.py::_hermes_cwd), so the relative path they're told about in the
+  # prompt ("artifacts/prd.md") is the same path their own file tool
+  # resolves -- found live: granting the tool alone isn't enough without
+  # that, since nothing else connects "the path in the prompt" to "where
+  # the process is actually running."
+  #
+  # The toolset's real name is `file` (singular) -- confirmed live via
+  # `hermes tools list`. Every role below had `files` (plural) before this
+  # was caught; Hermes silently drops an unrecognized toolset name rather
+  # than failing the invocation, so this was never visible as an error,
+  # only as roles quietly having no file access at all. builder/reviewer
+  # had carried this typo since Phase 5, invisible until now because every
+  # prior live test mocked hermes_run and never exercised real toolset
+  # resolution.
   planner:
     context_mode: assembled
-    toolsets: [skills]
+    toolsets: [skills, file]
     budget:
       max_input_tokens: 12000
       max_output_tokens: 4000
 
   product-designer:
     context_mode: assembled
-    toolsets: [skills]
+    toolsets: [skills, file]
     budget:
       max_input_tokens: 16000
       max_output_tokens: 5000
 
   architect:
     context_mode: assembled
-    toolsets: [skills, terminal]
+    toolsets: [skills, terminal, file]
     budget:
       max_input_tokens: 24000
       max_output_tokens: 7000
 
   builder:
     context_mode: guided
-    toolsets: [skills, terminal, files]
+    toolsets: [skills, terminal, file]
     budget:
       max_input_tokens: 20000
       max_output_tokens: 6000
@@ -50,7 +69,7 @@ roles:
 
   reviewer:
     context_mode: guided
-    toolsets: [skills, terminal, files]
+    toolsets: [skills, terminal, file]
     budget:
       max_input_tokens: 18000
       max_output_tokens: 5000

@@ -9,7 +9,9 @@ not screen flow (product designer).
 - `artifacts/architecture.md`: component boundaries, data model, sync/
   consistency strategy where relevant, and anything the PRD's non-functional
   requirements constrain (offline behavior, conflict resolution, tiering
-  limits).
+  limits). Write it directly with your own file tool, to that relative
+  path -- don't just print the content in your response and describe where
+  it should go.
 - Flag any acceptance criterion that is technically infeasible or
   materially expensive as stated, before implementation starts, not during
   review.

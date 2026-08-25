@@ -57,6 +57,20 @@ class HermesRequest:
     skills: str | None = None        # comma-separated
     resume_session_id: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
+    cwd: Path | None = None   # where a `file`-toolset write/read call
+                               # resolves ITS OWN relative paths against --
+                               # unset means "whatever this process's own
+                               # cwd happens to be" (e.g. /app in either
+                               # container image), which is never a
+                               # project's real directory. The context
+                               # prompt tells the agent about paths like
+                               # "artifacts/prd.md" or "lib/app.dart" --
+                               # this is what makes those the SAME relative
+                               # path the agent's own tools resolve, rather
+                               # than two different, unconnected notions of
+                               # "here." Found live: a role with the
+                               # `file` toolset granted still had nowhere
+                               # correct to write, because nothing set this.
 
     @property
     def is_continuation(self) -> bool:
@@ -104,6 +118,18 @@ def build_argv(request: HermesRequest, *, usage_file: Path | None) -> list[str]:
 
     if request.toolsets:
         argv += ["--toolsets", request.toolsets]
+        # Without this, a role with e.g. `file`/`terminal` granted hits
+        # Hermes's own interactive tool-call approval prompt -- which has
+        # no TTY to answer it in a non-interactive `-z`/`chat -q`
+        # subprocess, so the call just hangs until the HTTP client's own
+        # timeout gives up. Found live: a real turn that should have taken
+        # seconds instead ran until a 600s ReadTimeout. Our own role-based
+        # toolset grants in config/agents.yaml ARE the approval mechanism
+        # here -- a human decides once, at config time, which tools a role
+        # may use at all, not per call at turn time -- so bypassing
+        # Hermes's own per-call prompt is the correct behavior for this
+        # architecture, not a safety hole opened casually.
+        argv += ["--yolo"]
     if request.skills:
         argv += ["--skills", request.skills]
     return argv
@@ -226,13 +252,15 @@ def run(
     request.home_dir.mkdir(parents=True, exist_ok=True)
     if usage_file is not None:
         usage_file.parent.mkdir(parents=True, exist_ok=True)
+    if request.cwd is not None:
+        request.cwd.mkdir(parents=True, exist_ok=True)
 
     argv = build_argv(request, usage_file=usage_file)
     env = build_env(request)
 
     try:
         proc = runner(
-            argv, env=env, capture_output=True, text=True,
+            argv, env=env, cwd=request.cwd, capture_output=True, text=True,
             timeout=timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError) as exc:

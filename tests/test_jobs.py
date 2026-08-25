@@ -404,6 +404,66 @@ def test_runtime_client_error_becomes_a_runtime_error(monkeypatch, runner):
         runner.run_turn("Build a habit tracker.")
 
 
+# ---- Hermes cwd: where a `file`-toolset role's own writes land -------------
+
+
+def test_assembled_role_gets_the_agent_state_root_as_cwd(monkeypatch, runner):
+    # runner's default state is "planning" -- role: planner, context_mode:
+    # assembled. Regression test: granting the `file` toolset alone did
+    # nothing live, because nothing told the agent's own tool calls where
+    # to resolve "artifacts/prd.md" against.
+    captured = {}
+
+    def fake_run(request, usage_file=None):
+        captured["cwd"] = request.cwd
+        return HermesResult(
+            response="ok", usage={"failed": False, "session_id": "s1"},
+            exit_code=0, session_id="s1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    runner.run_turn("Build a habit tracker.")
+
+    assert captured["cwd"] == runner.store.root
+
+
+def test_guided_role_gets_project_source_root_as_cwd(monkeypatch, runner, tmp_path):
+    project = tmp_path / "source"
+    project.mkdir()
+    runner.project_source_root = project
+    runner.store.update_state(workflow_state="implementation", attempts=0)
+    captured = {}
+
+    def fake_run(request, usage_file=None):
+        captured["cwd"] = request.cwd
+        return HermesResult(
+            response="ok", usage={"failed": False, "session_id": "s1"},
+            exit_code=0, session_id="s1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    runner.run_turn("build it")
+
+    assert captured["cwd"] == project
+
+
+def test_guided_role_with_no_project_source_gets_no_cwd(monkeypatch, runner):
+    runner.store.update_state(workflow_state="implementation", attempts=0)
+    captured = {}
+
+    def fake_run(request, usage_file=None):
+        captured["cwd"] = request.cwd
+        return HermesResult(
+            response="ok", usage={"failed": False, "session_id": "s1"},
+            exit_code=0, session_id="s1",
+        )
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    runner.run_turn("build it")
+
+    assert captured["cwd"] is None
+
+
 # ---- artifact versioning (orchestrator/artifact_versioning.py) -------------
 
 

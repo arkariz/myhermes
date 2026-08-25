@@ -57,6 +57,25 @@ def test_run_returns_the_response_and_usage(monkeypatch, tmp_path):
     assert captured["request"].provider == "openrouter"
     assert captured["request"].resume_session_id is None
     assert captured["usage_file"] is None
+    assert captured["request"].cwd is None
+
+
+def test_run_passes_through_cwd(monkeypatch, tmp_path):
+    captured = {}
+    target_cwd = tmp_path / "project-state"
+
+    def fake_run(request, usage_file=None):
+        captured["request"] = request
+        return HermesResult(response="ok", usage={"failed": False}, exit_code=0, session_id="s")
+
+    monkeypatch.setattr(server_module, "hermes_run", fake_run)
+
+    client.post("/run", json={
+        "prompt": "hi", "home_dir": str(tmp_path), "provider": "openrouter",
+        "model": "openai/gpt-4o-mini", "cwd": str(target_cwd),
+    })
+
+    assert captured["request"].cwd == target_cwd
 
 
 def test_run_passes_through_resume_session_id(monkeypatch, tmp_path):
