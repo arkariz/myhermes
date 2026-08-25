@@ -31,9 +31,18 @@ class IndexMetadata:
 
 def current_git_revision(project_root: Path) -> str | None:
     """The project's current commit, or None if it isn't a git repo (or
-    has no commits yet). Freshness degrades to "always rebuild" rather
-    than raising -- a project without git is a real, supportable case, not
-    an error."""
+    has no commits yet, or doesn't exist yet at all -- e.g. a project just
+    /create'd from Telegram, before any source has been dropped into its
+    host_path). Freshness degrades to "always rebuild" rather than
+    raising -- all three are real, supportable cases, not errors.
+
+    A missing directory needs an explicit guard: subprocess.run raises
+    FileNotFoundError/NotADirectoryError before producing a
+    CompletedProcess for a nonexistent cwd, rather than a normal nonzero
+    exit code -- found live via exactly that crash.
+    """
+    if not project_root.is_dir():
+        return None
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=project_root,
         capture_output=True, text=True,

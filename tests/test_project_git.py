@@ -21,6 +21,13 @@ def test_is_git_repo_is_false_for_a_plain_directory(tmp_path):
     assert is_git_repo(tmp_path) is False
 
 
+def test_is_git_repo_is_false_for_a_directory_that_does_not_exist_yet(tmp_path):
+    # A project just /create'd from Telegram, before any source has been
+    # dropped into its host_path -- a real case, not an error. Regression
+    # test: subprocess.run raises before this guard existed.
+    assert is_git_repo(tmp_path / "does-not-exist-yet") is False
+
+
 def test_is_git_repo_is_true_after_git_init(tmp_path):
     _init_repo(tmp_path)
     assert is_git_repo(tmp_path) is True

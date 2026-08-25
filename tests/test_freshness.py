@@ -47,6 +47,13 @@ def test_current_git_revision_is_none_outside_a_repo(tmp_path):
     assert current_git_revision(tmp_path) is None
 
 
+def test_current_git_revision_is_none_for_a_directory_that_does_not_exist_yet(tmp_path):
+    # A project just /create'd from Telegram, before any source has been
+    # dropped into its host_path -- a real case, not an error. Regression
+    # test: subprocess.run raises before this guard existed.
+    assert current_git_revision(tmp_path / "does-not-exist-yet") is None
+
+
 def test_current_git_revision_matches_head(tmp_path):
     _init_git_repo(tmp_path)
     _commit(tmp_path, "a.txt", "1", "first")

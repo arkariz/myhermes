@@ -36,6 +36,17 @@ class ProjectGitError(Exception):
 
 
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    # A directory that doesn't exist yet is a real, expected case here --
+    # e.g. a project just /create'd from Telegram, before any source has
+    # been dropped into its host_path -- not a bug. subprocess.run doesn't
+    # degrade gracefully on its own (it raises FileNotFoundError /
+    # NotADirectoryError before ever producing a CompletedProcess), so
+    # every caller in this module would otherwise crash the turn instead
+    # of getting the "not a git repo" answer they already know how to
+    # handle. Found live: exactly this crash, driving through the
+    # ordinary /create -> implementation path with no source yet.
+    if not cwd.is_dir():
+        return subprocess.CompletedProcess(args=argv, returncode=128, stdout="", stderr="not a directory")
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
 
 
