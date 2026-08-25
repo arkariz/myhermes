@@ -71,7 +71,8 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
     store = ProjectStore(entry.state_path)
     runner = TurnRunner(
         project_id=project_id, store=store, workflow=_load_workflow(),
-        agents=_load_agents(), models=_load_models(), souls_dir=str(REPO_ROOT / "souls"),
+        agents=_load_agents(), models=_load_models(),
+        souls_dir=str(CONFIG_DIR / "souls"),
     )
     return runner, store
 

@@ -1,10 +1,25 @@
+# --- real code lives outside these; everything below is generated/runtime state ---
+
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
 .env
-workspace/*
-!workspace/.gitkeep
 *.egg-info/
 .ruff_cache/
+
+# Local playground/scratch project state -- created by running
+# `orchestrator/cli.py` directly against the repo root instead of a real
+# project's host-path (or without --state-path). Never intentional output;
+# never something a fresh clone should contain.
+.agentic-dev/
+
+# Per-project agent state when a real project happens to be mounted inside
+# this repo during manual testing (docker/spike/demo.py itself always uses
+# /tmp/demo/... and never writes here).
+workspace/*
+!workspace/.gitkeep
+
+# Live-run secrets for the Hermes/OpenRouter spike (docker/spike/). The real
+# key lives only in .env.spike; .env.spike.example stays a blank template.
 docker/spike/secrets/.env.spike
