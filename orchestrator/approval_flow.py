@@ -78,3 +78,24 @@ def apply_approval(
         "payload": {"approval_type": approval_type, "next_state": next_state, "approver": approver},
     })
     return next_state
+
+
+def default_continuation_message(approval_type: str, next_state: str) -> str:
+    """The synthetic human message used to auto-kick-off a state's first
+    turn right after its own gating approval, so a human doesn't have to
+    type something purely to unlock work the approval already authorized
+    (docs/progress.md: "why did I have to chat manually after approving").
+
+    Deliberately content-light: the role's own context (running summary,
+    current artifact, recorded decisions) already carries everything
+    relevant to continue with -- this message only needs to say "go", not
+    restate the plan.
+
+    NOT used for a project's very first approval (the implicit backlog ->
+    discovery one at project creation) -- discovery's first turn needs the
+    human's own initial idea as its content, which nothing here can
+    synthesize. Only CLI's `approve` command and Telegram's inline-button
+    callback call this; `_create_project_from_chat`'s auto-approval does
+    not.
+    """
+    return f"{approval_type} approved -- continue with {next_state}."

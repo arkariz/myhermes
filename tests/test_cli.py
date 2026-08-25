@@ -140,6 +140,66 @@ def test_approve_clears_the_session_forcing_a_rebuild_next_state(cli_env, monkey
     assert store.read_state().get("session") is None
 
 
+TWO_STATE_WORKFLOW_YAML = """
+initial: discovery
+states:
+  discovery:
+    kind: collaborative
+    role: planner
+    artifact: discovery.md
+    completion: approval
+    approval_type: APPROVE_DISCOVERY
+    next: planning
+  planning:
+    kind: collaborative
+    role: planner
+    artifact: prd.md
+    completion: approval
+    approval_type: APPROVE_PRD
+    next: done
+  done:
+    kind: terminal
+"""
+
+
+def test_approve_auto_continues_into_a_state_that_runs_an_agent(cli_env, monkeypatch, capsys):
+    """Regression/feature test: approving used to just flip the state and
+    stop, leaving the human to type a follow-up message purely to unlock
+    work the approval already authorized. Now the newly-entered state's
+    first turn runs automatically."""
+    (cli_env / "config" / "workflow.yaml").write_text(TWO_STATE_WORKFLOW_YAML)
+    cli_module.main(["project", "new", "toy", "--host-path", "p"])
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Discovery notes."))
+    cli_module.main(["turn", "toy", "Build a habit tracker."])
+    capsys.readouterr()  # drain prior output
+
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Planning kicked off."))
+    rc = cli_module.main(["approve", "toy", "APPROVE_DISCOVERY"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Approved. 'discovery' -> 'planning'" in out
+    assert "Planning kicked off." in out
+
+    status_rc = cli_module.main(["status", "toy"])
+    assert status_rc == 0
+    assert "workflow_state: planning" in capsys.readouterr().out
+
+
+def test_approve_does_not_auto_continue_into_a_terminal_state(cli_env, monkeypatch, capsys):
+    cli_module.main(["project", "new", "toy", "--host-path", "p"])
+    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    cli_module.main(["turn", "toy", "Build a habit tracker."])
+    capsys.readouterr()
+
+    calls = []
+    monkeypatch.setattr(jobs_module, "hermes_run", lambda request, usage_file=None: calls.append(1) or fake_success()(request, usage_file))
+    rc = cli_module.main(["approve", "toy", "APPROVE_PRD"])
+
+    assert rc == 0
+    assert calls == []  # "done" is terminal -- no auto-triggered turn
+
+
 # ---- Telegram forum-topic auto-creation on `project new` -------------------
 
 

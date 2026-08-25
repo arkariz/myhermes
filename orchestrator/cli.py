@@ -22,7 +22,7 @@ from indexing.dart_adapter import DartAnalyzerIndexer
 from indexing.remote import RemoteIndexer
 from telegram_bot.topics import ForumTopicError, create_forum_topic
 
-from .approval_flow import apply_approval
+from .approval_flow import apply_approval, default_continuation_message
 from .approvals import ApprovalError
 from .config import AgentsConfig, ModelsConfig
 from .jobs import TurnBlocked, TurnRunner
@@ -125,6 +125,14 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
     return runner, store
 
 
+def _print_turn_outcome(outcome) -> int:
+    print(f"[{outcome.turn_id}] ({'FAILED' if outcome.failed else 'ok'})")
+    print(outcome.response)
+    if outcome.failed and outcome.failure_reason:
+        print(f"reason: {outcome.failure_reason}", file=sys.stderr)
+    return 1 if outcome.failed else 0
+
+
 def cmd_turn(args: argparse.Namespace) -> int:
     runner, store = _build_runner(args.project_id)
     try:
@@ -133,11 +141,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         return 1
 
-    print(f"[{outcome.turn_id}] ({'FAILED' if outcome.failed else 'ok'})")
-    print(outcome.response)
-    if outcome.failed and outcome.failure_reason:
-        print(f"reason: {outcome.failure_reason}", file=sys.stderr)
-    return 1 if outcome.failed else 0
+    return _print_turn_outcome(outcome)
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -155,6 +159,21 @@ def cmd_approve(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Approved. {current!r} -> {next_state!r}")
+
+    # Auto-continue into the newly-unlocked state so approving doesn't
+    # need a manual follow-up message just to kick off work the approval
+    # already authorized -- see approval_flow.default_continuation_message.
+    next_state_obj = workflow.get(next_state)
+    if next_state_obj.runs_agent:
+        runner, _ = _build_runner(args.project_id)
+        message = default_continuation_message(args.approval_type, next_state)
+        try:
+            outcome = runner.run_turn(message)
+        except TurnBlocked as exc:
+            print(f"BLOCKED: {exc}", file=sys.stderr)
+            return 0  # the approval itself still succeeded
+        return _print_turn_outcome(outcome)
+
     return 0
 
 

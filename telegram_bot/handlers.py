@@ -35,7 +35,7 @@ from telegram.ext import Application, ContextTypes
 
 from indexing.dart_adapter import DartAnalyzerIndexer
 from indexing.remote import RemoteIndexer
-from orchestrator.approval_flow import apply_approval
+from orchestrator.approval_flow import apply_approval, default_continuation_message
 from orchestrator.approvals import ApprovalError
 from orchestrator.config import AgentsConfig, ModelsConfig
 from orchestrator.jobs import TurnBlocked, TurnRunner
@@ -411,3 +411,18 @@ async def handle_approve_callback(update: Update, context: ContextTypes.DEFAULT_
 
     name = update.effective_user.first_name or approver
     await query.message.reply_text(f"Approved by {name}. Moved to `{next_state}`.")
+
+    # Auto-continue into the newly-unlocked state so approving doesn't need
+    # a manual follow-up message just to kick off work the approval already
+    # authorized -- see orchestrator.approval_flow.default_continuation_message.
+    next_state_obj = workflow.get(next_state)
+    if next_state_obj.runs_agent:
+        message = default_continuation_message(payload.approval_type, next_state)
+        job = TurnJob(
+            project_id=payload.project_id,
+            chat_id=query.message.chat.id,
+            thread_id=query.message.message_thread_id,
+            human_message=message,
+        )
+        await context.bot_data["inbox"].put(job)
+        await query.message.reply_text("Continuing automatically...")

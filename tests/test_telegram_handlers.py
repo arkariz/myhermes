@@ -198,6 +198,66 @@ async def test_approve_callback_applies_a_valid_approval(bot_data, tmp_path):
     assert token not in bot_data["callback_table"]  # single use
 
 
+TWO_STATE_WORKFLOW_YAML = """
+initial: discovery
+states:
+  discovery:
+    kind: collaborative
+    role: planner
+    artifact: discovery.md
+    completion: approval
+    approval_type: APPROVE_DISCOVERY
+    next: planning
+  planning:
+    kind: collaborative
+    role: planner
+    artifact: prd.md
+    completion: approval
+    approval_type: APPROVE_PRD
+    next: done
+  done:
+    kind: terminal
+"""
+
+
+@pytest.mark.asyncio
+async def test_approve_callback_auto_continues_into_a_state_that_runs_an_agent(bot_data, tmp_path):
+    """Regression/feature test: approving used to just flip the state and
+    stop, leaving the human to type a follow-up message purely to unlock
+    work the approval already authorized. Now the newly-entered state's
+    first turn is enqueued automatically, through the same inbox the
+    worker already drains."""
+    (tmp_path / "workflow.yaml").write_text(TWO_STATE_WORKFLOW_YAML)
+    store = _new_project(bot_data, tmp_path)
+    store.write_state({"workflow_state": "discovery", "attempts": 0, "artifact_revision": 0})
+
+    token = "abc123"
+    bot_data["callback_table"][token] = handlers.CallbackPayload(
+        project_id="toy", approval_type="APPROVE_DISCOVERY", artifact_revision=0,
+    )
+
+    update = make_update()
+    update.callback_query = MagicMock()
+    update.callback_query.data = token
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_reply_markup = AsyncMock()
+    update.callback_query.message = MagicMock()
+    update.callback_query.message.chat.id = 100
+    update.callback_query.message.message_thread_id = None
+    update.callback_query.message.reply_text = AsyncMock()
+    context = make_context(bot_data)
+
+    await handlers.handle_approve_callback(update, context)
+
+    assert store.read_state()["workflow_state"] == "planning"
+    assert bot_data["inbox"].qsize() == 1
+    job = bot_data["inbox"].get_nowait()
+    assert job.project_id == "toy"
+    assert job.chat_id == 100
+    assert "APPROVE_DISCOVERY" in job.human_message
+    assert "planning" in job.human_message
+
+
 @pytest.mark.asyncio
 async def test_approve_callback_with_stale_revision_is_rejected(bot_data, tmp_path):
     _new_project(bot_data, tmp_path)
