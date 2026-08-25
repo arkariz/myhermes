@@ -19,6 +19,7 @@ from pathlib import Path
 
 from indexing.dart_adapter import DartAnalyzerIndexer
 from indexing.remote import RemoteIndexer
+from runtime.agent_runtime import HttpAgentRuntime, InProcessHermesRuntime
 from settings import settings
 from telegram_bot.topics import ForumTopicError, create_forum_topic
 
@@ -99,14 +100,16 @@ def _build_runner(project_id: str) -> tuple[TurnRunner, ProjectStore]:
     entry = _registry().get(project_id)
     store = ProjectStore(entry.state_path)
     runtime_url = settings.runtime_url
+    # Unset (the default) means InProcessHermesRuntime -- same single-host
+    # behavior as every live run so far. Set AGENTIC_RUNTIME_URL to route
+    # Hermes invocations through runtime/server.py over HTTP instead --
+    # picked once, here, not re-decided per call.
+    agent_runtime = HttpAgentRuntime(base_url=runtime_url) if runtime_url else InProcessHermesRuntime()
     runner = TurnRunner(
         project_id=project_id, store=store, workflow=_load_workflow(),
         agents=_load_agents(), models=_load_models(),
         souls_dir=str(settings.souls_dir),
-        # Unset (the default) means runtime.hermes.run() in-process, same
-        # single-host behavior as every live run so far. Set this to route
-        # Hermes invocations through runtime/server.py over HTTP instead.
-        runtime_url=runtime_url,
+        agent_runtime=agent_runtime,
         # Always wired, never a hard requirement: both indexers'
         # supports() returns False for a project with no pubspec.yaml, and
         # TurnRunner._current_index_revision() degrades to "no index" on

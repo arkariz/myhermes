@@ -1,21 +1,23 @@
 """TurnRunner: the piece that ties state machine + sessions + context
-builder + runtime.hermes + store together for one turn.
+builder + runtime.agent_runtime + store together for one turn.
 
-hermes_run is monkeypatched -- these tests never touch a subprocess, a
-network call, or real money. What's under test is the WIRING: does a
-boundary turn build full context and open a session; does a continuation
-turn resume and send a delta; does a failed turn bump attempts without
-advancing; does exhausting attempts block the project.
+hermes_run is monkeypatched (on runtime.agent_runtime, the one place both
+TurnRunner and summarizer.py now get it from -- see that module's own
+docstring) -- these tests never touch a subprocess, a network call, or
+real money. What's under test is the WIRING: does a boundary turn build
+full context and open a session; does a continuation turn resume and send
+a delta; does a failed turn bump attempts without advancing; does
+exhausting attempts block the project.
 """
 
 import pytest
 
-import orchestrator.jobs as jobs_module
+import runtime.agent_runtime as agent_runtime_module
 from orchestrator.config import AgentsConfig, ModelsConfig
 from orchestrator.jobs import TurnBlocked, TurnRunner
 from orchestrator.state_machine import WorkflowDefinition
 from orchestrator.store import ProjectStore
-from runtime.hermes import HermesResult
+from runtime.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
 
 
 WORKFLOW_YAML = """
@@ -117,7 +119,7 @@ def test_first_turn_is_a_full_boundary_turn(monkeypatch, runner):
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
     outcome = runner.run_turn("Build a habit tracker.")
 
     assert outcome.failed is False
@@ -128,7 +130,7 @@ def test_first_turn_is_a_full_boundary_turn(monkeypatch, runner):
 
 
 def test_first_turn_opens_a_new_session(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(session_id="sess-1"))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(session_id="sess-1"))
     runner.run_turn("Build a habit tracker.")
 
     state = runner.store.read_state()
@@ -137,7 +139,7 @@ def test_first_turn_opens_a_new_session(monkeypatch, runner):
 
 
 def test_response_and_manifest_are_persisted(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="The PRD text."))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="The PRD text."))
     outcome = runner.run_turn("Build a habit tracker.")
 
     assert runner.store.read_turn_artifact(outcome.turn_id, "response.md") == "The PRD text."
@@ -149,7 +151,7 @@ def test_response_and_manifest_are_persisted(monkeypatch, runner):
 
 
 def test_second_turn_in_the_same_state_resumes(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(session_id="sess-1"))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(session_id="sess-1"))
     runner.run_turn("Build a habit tracker.")
 
     captured = {}
@@ -162,7 +164,7 @@ def test_second_turn_in_the_same_state_resumes(monkeypatch, runner):
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
     runner.run_turn("Make it support two users.")
 
     assert captured["request"].resume_session_id == "sess-1"
@@ -170,7 +172,7 @@ def test_second_turn_in_the_same_state_resumes(monkeypatch, runner):
 
 
 def test_continuation_turn_increments_session_turn_count(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(session_id="sess-1"))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(session_id="sess-1"))
     runner.run_turn("Build a habit tracker.")
     runner.run_turn("Make it support two users.")
 
@@ -183,7 +185,7 @@ def test_continuation_turn_increments_session_turn_count(monkeypatch, runner):
 
 
 def test_failed_turn_increments_attempts_without_advancing(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_failure())
     outcome = runner.run_turn("Build a habit tracker.")
 
     assert outcome.failed is True
@@ -194,7 +196,7 @@ def test_failed_turn_carries_the_real_failure_reason(monkeypatch, runner):
     # response is often empty on a real failure (no stdout to show) --
     # failure_reason is the only place a caller (CLI, Telegram) can find
     # out WHY, e.g. a 429 rate limit vs. a misconfigured provider.
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_failure())
     outcome = runner.run_turn("Build a habit tracker.")
 
     assert outcome.failed is True
@@ -202,11 +204,11 @@ def test_failed_turn_carries_the_real_failure_reason(monkeypatch, runner):
 
 
 def test_successful_turn_resets_attempts(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_failure())
     runner.run_turn("try 1")
     assert runner.store.read_state()["attempts"] == 1
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
     runner.run_turn("try 2")
     assert runner.store.read_state()["attempts"] == 0
 
@@ -235,7 +237,7 @@ def test_decision_block_in_response_is_recorded(monkeypatch, runner):
         "Here's my reasoning.\n\n"
         "```decision\nid: 001-scope\ndecision: Single-child MVP\n```\n"
     )
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response=response))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response=response))
     runner.run_turn("Build a habit tracker.")
 
     decision_file = runner.store.decisions_dir() / "001-scope.md"
@@ -270,19 +272,35 @@ def runner_with_summarizer(tmp_path):
 
 
 def test_no_summarizer_route_means_no_summary_file(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
     runner.run_turn("Build a habit tracker.")
     assert runner.store.read_summary("planning") is None
 
 
-def test_summarizer_route_present_updates_the_summary(monkeypatch, runner_with_summarizer):
-    import orchestrator.summarizer as summarizer_module
+# These four tests all drive TWO Hermes calls per turn -- the main turn,
+# then the summarizer's own one-shot call -- which now share exactly ONE
+# agent_runtime.run(), not two independently-mockable module bindings the
+# way jobs.py and summarizer.py used to each import separately (that
+# duplication is exactly how a real routing bug shipped unnoticed once --
+# see runtime/agent_runtime.py). A single fake distinguishes the two calls
+# by prompt content: summarizer.py's own template has a fixed, recognizable
+# opening line ("You maintain a running summary...").
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
-    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: HermesResult(
-        response="Summary: building a habit tracker.", usage={"failed": False},
-        exit_code=0, session_id=None,
-    ))
+
+def _is_summary_prompt(request) -> bool:
+    return request.prompt.startswith("You maintain a running summary")
+
+
+def test_summarizer_route_present_updates_the_summary(monkeypatch, runner_with_summarizer):
+    def fake_run(request, usage_file=None):
+        if _is_summary_prompt(request):
+            return HermesResult(
+                response="Summary: building a habit tracker.", usage={"failed": False},
+                exit_code=0, session_id=None,
+            )
+        return fake_success()(request, usage_file=usage_file)
+
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
 
     runner_with_summarizer.run_turn("Build a habit tracker.")
 
@@ -292,63 +310,68 @@ def test_summarizer_route_present_updates_the_summary(monkeypatch, runner_with_s
 
 
 def test_summarizer_is_not_called_when_the_main_turn_fails(monkeypatch, runner_with_summarizer):
-    import orchestrator.summarizer as summarizer_module
+    calls = []
 
-    called = []
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_failure())
-    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: called.append(1))
+    def fake_run(request, usage_file=None):
+        calls.append(request.prompt)
+        return fake_failure()(request, usage_file=usage_file)
+
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
 
     runner_with_summarizer.run_turn("Build a habit tracker.")
 
-    assert called == []
+    assert len(calls) == 1  # only the main (failed) turn -- summarizer never ran
+    assert not any(_is_summary_prompt_text(p) for p in calls)
     assert runner_with_summarizer.store.read_summary("planning") is None
 
 
-def test_summarizer_failure_does_not_fail_the_turn(monkeypatch, runner_with_summarizer):
-    import orchestrator.summarizer as summarizer_module
+def _is_summary_prompt_text(prompt: str) -> bool:
+    return prompt.startswith("You maintain a running summary")
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="The PRD text."))
-    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: HermesResult(
-        response="", usage={"failed": True}, exit_code=1, session_id=None,
-    ))
+
+def test_summarizer_failure_does_not_fail_the_turn(monkeypatch, runner_with_summarizer):
+    def fake_run(request, usage_file=None):
+        if _is_summary_prompt(request):
+            return HermesResult(response="", usage={"failed": True}, exit_code=1, session_id=None)
+        return fake_success(response="The PRD text.")(request, usage_file=usage_file)
+
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
 
     outcome = runner_with_summarizer.run_turn("Build a habit tracker.")
 
     assert outcome.failed is False
     assert outcome.response == "The PRD text."
+    assert runner_with_summarizer.store.read_summary("planning") is None  # left untouched
 
 
-def test_runtime_url_reaches_the_summarizer_too(monkeypatch, runner_with_summarizer):
-    """The container-topology bug this guards against: the orchestrator
-    container has no Hermes CLI at all, so if TurnRunner's own runtime_url
-    didn't also reach summarizer.update_summary(), every successful turn
-    with a summarizer route configured (the default in config/models.yaml)
-    would crash there the first time it actually ran in that container."""
-    import orchestrator.summarizer as summarizer_module
+def test_agent_runtime_is_shared_between_the_turn_and_the_summarizer(monkeypatch, runner_with_summarizer):
+    """Regression test for a bug that shipped for real: jobs.py and
+    summarizer.py used to each pick their OWN routing independently
+    (a bare runtime_url string, re-checked per call in two different
+    files) -- and the summarizer's copy of that check was simply missing
+    once, live, in a container with no Hermes CLI at all. Now there is
+    only one shared agent_runtime object, so this class of drift is
+    structurally impossible: both calls go through it or neither does."""
+    runner_with_summarizer.agent_runtime = HttpAgentRuntime(base_url="http://agent-runtime:8000")
+    captured_urls = []
 
-    captured = {}
-    runner_with_summarizer.runtime_url = "http://agent-runtime:8000"
-
-    monkeypatch.setattr(
-        jobs_module, "runtime_client_run",
-        lambda request, usage_file=None, base_url=None: HermesResult(
+    def fake_client_run(request, usage_file=None, base_url=None):
+        captured_urls.append(base_url)
+        if _is_summary_prompt(request):
+            return HermesResult(response="Summarized.", usage={"failed": False}, exit_code=0, session_id=None)
+        return HermesResult(
             response="The PRD text.", usage={"failed": False, "session_id": "s1"},
             exit_code=0, session_id="s1",
-        ),
-    )
+        )
 
-    def fake_client_run(request, base_url):
-        captured["base_url"] = base_url
-        return HermesResult(response="Summarized.", usage={"failed": False}, exit_code=0, session_id=None)
-
-    monkeypatch.setattr(summarizer_module, "runtime_client_run", fake_client_run)
-    monkeypatch.setattr(summarizer_module, "hermes_run", lambda request: (_ for _ in ()).throw(
-        AssertionError("summarizer should not call hermes_run in-process when runtime_url is set")
+    monkeypatch.setattr(agent_runtime_module, "runtime_client_run", fake_client_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", lambda request, usage_file=None: (_ for _ in ()).throw(
+        AssertionError("should not call hermes_run in-process when agent_runtime is HttpAgentRuntime")
     ))
 
     runner_with_summarizer.run_turn("Build a habit tracker.")
 
-    assert captured["base_url"] == "http://agent-runtime:8000"
+    assert captured_urls == ["http://agent-runtime:8000", "http://agent-runtime:8000"]
     assert runner_with_summarizer.store.read_summary("planning") == "Summarized."
 
 
@@ -356,11 +379,12 @@ def test_runtime_url_reaches_the_summarizer_too(monkeypatch, runner_with_summari
 
 
 def test_no_runtime_url_calls_hermes_run_in_process(monkeypatch, runner):
-    # runner.runtime_url is None by default -- confirm the in-process path
-    # runs at all (the other two tests below confirm the HTTP path is used
-    # *instead* when runtime_url is set, and that it alone runs, not both).
-    assert runner.runtime_url is None
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="direct call"))
+    # runner.agent_runtime is an InProcessHermesRuntime by default -- confirm
+    # the in-process path runs at all (the other two tests below confirm the
+    # HTTP path is used *instead* when an HttpAgentRuntime is set, and that
+    # it alone runs, not both).
+    assert isinstance(runner.agent_runtime, InProcessHermesRuntime)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="direct call"))
 
     outcome = runner.run_turn("Build a habit tracker.")
 
@@ -368,7 +392,7 @@ def test_no_runtime_url_calls_hermes_run_in_process(monkeypatch, runner):
 
 
 def test_runtime_url_set_calls_the_http_client_instead(monkeypatch, runner):
-    runner.runtime_url = "http://agent-runtime:8000"
+    runner.agent_runtime = HttpAgentRuntime(base_url="http://agent-runtime:8000")
     captured = {}
 
     def fake_client_run(request, usage_file=None, base_url=None):
@@ -380,8 +404,8 @@ def test_runtime_url_set_calls_the_http_client_instead(monkeypatch, runner):
         )
 
     called_direct = []
-    monkeypatch.setattr(jobs_module, "runtime_client_run", fake_client_run)
-    monkeypatch.setattr(jobs_module, "hermes_run", lambda *a, **k: called_direct.append(1))
+    monkeypatch.setattr(agent_runtime_module, "runtime_client_run", fake_client_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", lambda *a, **k: called_direct.append(1))
 
     outcome = runner.run_turn("Build a habit tracker.")
 
@@ -393,12 +417,12 @@ def test_runtime_url_set_calls_the_http_client_instead(monkeypatch, runner):
 def test_runtime_client_error_becomes_a_runtime_error(monkeypatch, runner):
     from runtime.client import RuntimeClientError
 
-    runner.runtime_url = "http://agent-runtime:8000"
+    runner.agent_runtime = HttpAgentRuntime(base_url="http://agent-runtime:8000")
 
     def raise_client_error(request, usage_file=None, base_url=None):
         raise RuntimeClientError("could not reach runtime server")
 
-    monkeypatch.setattr(jobs_module, "runtime_client_run", raise_client_error)
+    monkeypatch.setattr(agent_runtime_module, "runtime_client_run", raise_client_error)
 
     with pytest.raises(RuntimeError, match="runtime server call failed"):
         runner.run_turn("Build a habit tracker.")
@@ -421,7 +445,7 @@ def test_assembled_role_gets_the_agent_state_root_as_cwd(monkeypatch, runner):
             exit_code=0, session_id="s1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
     runner.run_turn("Build a habit tracker.")
 
     assert captured["cwd"] == runner.store.root
@@ -441,7 +465,7 @@ def test_guided_role_gets_project_source_root_as_cwd(monkeypatch, runner, tmp_pa
             exit_code=0, session_id="s1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
     runner.run_turn("build it")
 
     assert captured["cwd"] == project
@@ -458,7 +482,7 @@ def test_guided_role_with_no_project_source_gets_no_cwd(monkeypatch, runner):
             exit_code=0, session_id="s1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run)
     runner.run_turn("build it")
 
     assert captured["cwd"] is None
@@ -476,7 +500,7 @@ def test_a_written_artifact_gets_committed(monkeypatch, runner):
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_the_artifact)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_the_artifact)
     runner.run_turn("Build a habit tracker.")
 
     from orchestrator.artifact_versioning import log
@@ -486,7 +510,7 @@ def test_a_written_artifact_gets_committed(monkeypatch, runner):
 
 
 def test_a_turn_with_no_artifact_change_commits_nothing(monkeypatch, runner):
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Just a question."))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="Just a question."))
     runner.run_turn("Build a habit tracker.")
 
     from orchestrator.artifact_versioning import log
@@ -501,7 +525,7 @@ def test_a_failed_turn_does_not_commit(monkeypatch, runner):
             response="", usage={"failed": True, "failure": "boom"}, exit_code=1, session_id=None,
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_then_fails)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_then_fails)
     runner.run_turn("Build a habit tracker.")
 
     from orchestrator.artifact_versioning import log
@@ -534,7 +558,7 @@ def _git_repo(path):
 
 def test_no_indexer_configured_means_no_index_revision(monkeypatch, runner):
     runner.store.update_state(workflow_state="implementation", attempts=0)
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     runner.run_turn("build it")
 
@@ -549,7 +573,7 @@ def test_guided_role_with_an_indexer_gets_a_real_index_revision(monkeypatch, run
     runner.project_source_root = project
     runner.indexer = FakeIndexer()
     runner.store.update_state(workflow_state="implementation", attempts=0)
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     runner.run_turn("build it")
 
@@ -565,7 +589,7 @@ def test_assembled_role_never_gets_an_index_revision_even_with_an_indexer(monkey
     runner.project_source_root = project
     runner.indexer = FakeIndexer()
     # runner's default state is "planning" -- role: planner, context_mode: assembled
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     runner.run_turn("Build a habit tracker.")
 
@@ -597,7 +621,7 @@ def test_index_provider_items_appear_in_the_manifest_for_a_guided_turn(monkeypat
     runner.project_source_root = project
     runner.indexer = FakeIndexer()
     runner.store.update_state(workflow_state="implementation", attempts=0)
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     outcome = runner.run_turn("build it")
 
@@ -680,7 +704,7 @@ def review_runner(tmp_path):
 def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch, review_runner):
     from orchestrator.project_git import current_revision
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     review_runner.run_turn("build it")
 
@@ -702,7 +726,7 @@ def test_builder_turn_commits_project_source_changes(monkeypatch, review_runner)
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_file)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_a_file)
 
     review_runner.run_turn("build it")
 
@@ -715,7 +739,7 @@ def test_builder_turn_with_no_source_changes_commits_nothing(monkeypatch, review
     from orchestrator.project_git import current_revision
 
     base_revision = current_revision(review_runner.project_source_root)
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
     review_runner.run_turn("build it")
 
@@ -732,7 +756,7 @@ def test_base_revision_is_stable_across_a_second_implementation_attempt(monkeypa
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_file)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_a_file)
     review_runner.run_turn("build it")
     first_base = review_runner.store.read_state()["implementation_base_revision"]
 
@@ -753,7 +777,7 @@ def test_reviewer_gets_the_real_diff_after_a_builder_commit(monkeypatch, review_
             exit_code=0, session_id="sess-1",
         )
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_run_that_writes_a_feature)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_a_feature)
 
     review_runner.run_turn("build it")
     review_runner.store.update_state(workflow_state="review", attempts=0)

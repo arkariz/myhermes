@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -42,6 +41,8 @@ from orchestrator.jobs import TurnBlocked, TurnRunner
 from orchestrator.registry import ProjectNotFound
 from orchestrator.state_machine import StateKind, WorkflowDefinition, WorkflowError
 from orchestrator.store import ProjectStore
+from runtime.agent_runtime import HttpAgentRuntime, InProcessHermesRuntime
+from settings import settings
 
 from .routing import RoutingError, link_project, resolve_project
 from .topics import ForumTopicError, create_forum_topic
@@ -57,9 +58,8 @@ def _default_host_root() -> Path:
     one; /create can't ask a chat message for a filesystem path without it
     feeling like a second form to fill out, so it picks a default instead).
     Override via TELEGRAM_DEFAULT_HOST_ROOT for your own machine's layout --
-    there is no universal correct default. Read at call time, not import
-    time, so a test (or a restart after changing the env var) sees it."""
-    return Path(os.environ.get("TELEGRAM_DEFAULT_HOST_ROOT", str(Path.home() / "agentic-dev-projects")))
+    there is no universal correct default."""
+    return settings.telegram_default_host_root
 
 
 @dataclass(frozen=True)
@@ -103,11 +103,12 @@ def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
     config_dir = _config_dir(bot_data)
     agents = AgentsConfig.load(config_dir / "agents.yaml")
     models = ModelsConfig.load(config_dir / "models.yaml")
-    runtime_url = os.environ.get("AGENTIC_RUNTIME_URL")
+    runtime_url = settings.runtime_url
+    agent_runtime = HttpAgentRuntime(base_url=runtime_url) if runtime_url else InProcessHermesRuntime()
     return TurnRunner(
         project_id=project_id, store=store, workflow=workflow,
         agents=agents, models=models, souls_dir=str(bot_data["souls_dir"]),
-        runtime_url=runtime_url,
+        agent_runtime=agent_runtime,
         # Same "always wired, never required" reasoning as orchestrator/cli.py,
         # including RemoteIndexer over the same runtime_url when it's set --
         # the orchestrator container has no Dart SDK on purpose.

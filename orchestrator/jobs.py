@@ -46,16 +46,7 @@ from .sessions import Session, SessionManager, SessionPolicy
 from .state_machine import State, WorkflowDefinition
 from .store import ProjectStore
 from indexing.port import CodebaseIndexer
-
-try:
-    from runtime.hermes import HermesRequest, HermesResult
-    from runtime.hermes import run as hermes_run
-    from runtime.client import RuntimeClientError
-    from runtime.client import run as runtime_client_run
-except ImportError:  # pragma: no cover - exercised only outside the repo root
-    HermesRequest = HermesResult = hermes_run = None  # type: ignore[assignment]
-    RuntimeClientError = None  # type: ignore[assignment]
-    runtime_client_run = None  # type: ignore[assignment]
+from runtime.agent_runtime import AgentRuntime, HermesRequest, InProcessHermesRuntime
 
 
 class TurnBlocked(Exception):
@@ -108,7 +99,7 @@ class TurnRunner:
                          # this explicitly; the default bought nothing but risk.
         estimator: TokenEstimator | None = None,
         session_policy: SessionPolicy | None = None,
-        runtime_url: str | None = None,
+        agent_runtime: AgentRuntime | None = None,
         project_source_root: Path | str | None = None,
         indexer: CodebaseIndexer | None = None,
     ):
@@ -122,12 +113,16 @@ class TurnRunner:
         self.session_policy = session_policy or SessionPolicy()
         self.session_manager = SessionManager(self.session_policy)
         self.events = EventLog(store, project_id)
-        # None (the default) means "call runtime.hermes.run() in-process" --
-        # how every project has run so far, on a single host with no
-        # container networking. Set this (e.g. from AGENTIC_RUNTIME_URL) to
-        # route the same call through runtime/server.py over HTTP instead,
-        # for the real orchestrator/agent-runtime container split.
-        self.runtime_url = runtime_url
+        # None (the default) means InProcessHermesRuntime() -- how every
+        # project has run so far, on a single host with no container
+        # networking. The caller (cli.py, telegram_bot/handlers.py) passes
+        # an HttpAgentRuntime instead to route the same call through
+        # runtime/server.py over HTTP, for the real orchestrator/
+        # agent-runtime container split -- selected ONCE at the entrypoint,
+        # not re-decided per call the way a bare runtime_url string used to
+        # require (see runtime/agent_runtime.py's own docstring for why
+        # that duplication existed and what replaced it).
+        self.agent_runtime = agent_runtime or InProcessHermesRuntime()
         # None (the default) means no codebase index at all -- guided roles
         # get whatever ReferencedFilesProvider was told explicitly and
         # nothing more, exactly today's behavior. Set both to opt in:
@@ -326,24 +321,7 @@ class TurnRunner:
             cwd=self._hermes_cwd(role_cfg),
         )
         usage_file = self.store.turn_dir(turn_id) / "usage.json" if not decision.resume else None
-
-        if self.runtime_url:
-            if runtime_client_run is None:
-                raise RuntimeError(
-                    "runtime.client is not importable -- run from the repo root "
-                    "or add it to sys.path"
-                )
-            try:
-                return runtime_client_run(request, usage_file=usage_file, base_url=self.runtime_url)
-            except RuntimeClientError as exc:
-                raise RuntimeError(f"runtime server call failed: {exc}") from exc
-
-        if hermes_run is None:
-            raise RuntimeError(
-                "runtime.hermes is not importable -- run from the repo root "
-                "or add it to sys.path"
-            )
-        return hermes_run(request, usage_file=usage_file)
+        return self.agent_runtime.run(request, usage_file=usage_file)
 
     def _record_decisions(self, response: str) -> None:
         for block in parse_decision_blocks(response):
@@ -362,7 +340,7 @@ class TurnRunner:
         result = summarizer.update_summary(
             self.store, workflow_state, route,
             human_message=human_message, agent_response=agent_response,
-            runtime_url=self.runtime_url,
+            agent_runtime=self.agent_runtime,
         )
         if not result.failed:
             self.events.emit(

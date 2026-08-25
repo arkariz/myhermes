@@ -7,16 +7,17 @@ python-telegram-bot's own wire format is out of scope.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import orchestrator.jobs as jobs_module
+import runtime.agent_runtime as agent_runtime_module
 from orchestrator.config import AgentsConfig, ModelsConfig
 from orchestrator.registry import ProjectRegistry
 from orchestrator.state_machine import WorkflowDefinition
 from orchestrator.store import ProjectStore
-from runtime.hermes import HermesResult
+from runtime.agent_runtime import HermesResult
 from telegram_bot import handlers
 
 AGENTS_YAML = """
@@ -324,7 +325,7 @@ async def test_process_turn_job_sends_the_response_and_attaches_approve_button(
     bot_data, tmp_path, monkeypatch,
 ):
     _new_project(bot_data, tmp_path)
-    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", _fake_hermes())
     app = make_app(bot_data)
     job = handlers.TurnJob(
         project_id="toy", chat_id=100, thread_id=None,
@@ -363,7 +364,7 @@ async def test_process_turn_job_does_not_offer_approval_on_a_failed_turn(
     button showed up next to an empty/error response. Found live after a
     turn failed on a rate-limited free-tier model."""
     _new_project(bot_data, tmp_path)
-    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes_failure())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", _fake_hermes_failure())
     app = make_app(bot_data)
     job = handlers.TurnJob(
         project_id="toy", chat_id=100, thread_id=None,
@@ -415,7 +416,7 @@ async def test_process_turn_job_sends_a_long_response_in_multiple_messages(
     generic "something went wrong" fallback did."""
     _new_project(bot_data, tmp_path)
     long_response = "\n\n".join(f"paragraph {i} " + "z" * 500 for i in range(20))
-    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes(response=long_response))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", _fake_hermes(response=long_response))
     app = make_app(bot_data)
     job = handlers.TurnJob(
         project_id="toy", chat_id=100, thread_id=None,
@@ -439,7 +440,7 @@ async def test_process_turn_job_sends_a_long_response_in_multiple_messages(
 @pytest.mark.asyncio
 async def test_inbox_worker_drains_the_queue_and_survives_a_failed_job(bot_data, tmp_path, monkeypatch):
     _new_project(bot_data, tmp_path)
-    monkeypatch.setattr(jobs_module, "hermes_run", _fake_hermes())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", _fake_hermes())
     app = make_app(bot_data)
 
     await bot_data["inbox"].put(handlers.TurnJob(
@@ -502,7 +503,10 @@ async def test_create_sets_pending_and_asks_for_name(bot_data):
 
 @pytest.mark.asyncio
 async def test_name_after_create_makes_a_new_project_and_topic(bot_data, tmp_path, monkeypatch):
-    monkeypatch.setenv("TELEGRAM_DEFAULT_HOST_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
     created = {}
 
     def fake_create(token, chat_id, name):
@@ -530,7 +534,10 @@ async def test_name_after_create_makes_a_new_project_and_topic(bot_data, tmp_pat
 @pytest.mark.asyncio
 async def test_create_auto_clears_a_leading_gate_state(bot_data, tmp_path, monkeypatch):
     (bot_data["config_dir"] / "workflow.yaml").write_text(GATED_WORKFLOW_YAML)
-    monkeypatch.setenv("TELEGRAM_DEFAULT_HOST_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
     monkeypatch.setattr(handlers, "create_forum_topic", lambda token, chat_id, name: 1)
 
     update = make_update(chat_id=200)
@@ -574,7 +581,10 @@ async def test_create_with_existing_name_is_rejected(bot_data, tmp_path):
 async def test_create_survives_a_forum_topic_failure(bot_data, tmp_path, monkeypatch):
     from telegram_bot.topics import ForumTopicError
 
-    monkeypatch.setenv("TELEGRAM_DEFAULT_HOST_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
 
     def fail(token, chat_id, name):
         raise ForumTopicError("chat is not a forum")

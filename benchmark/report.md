@@ -4,17 +4,17 @@ Same 9-turn scenario across 4 workflow states (discovery -> planning -> product-
 
 | # | State | Ours: turn kind | Ours tokens | Naive tokens | Naive / Ours |
 |---|---|---|---|---|---|
-| 1 | discovery | full-rebuild | 329 | 16 | 0.05x |
-| 2 | discovery | continuation | 597 | 213 | 0.36x |
-| 3 | planning | full-rebuild | 420 | 461 | 1.10x |
-| 4 | planning | continuation | 751 | 762 | 1.01x |
-| 5 | planning | continuation | 744 | 999 | 1.34x |
-| 6 | product-design | full-rebuild | 426 | 1190 | 2.79x |
-| 7 | product-design | continuation | 745 | 1481 | 1.99x |
-| 8 | architecture | full-rebuild | 437 | 1615 | 3.70x |
-| 9 | architecture | continuation | 713 | 1862 | 2.61x |
+| 1 | discovery | full-rebuild | 400 | 16 | 0.04x |
+| 2 | discovery | continuation | 668 | 213 | 0.32x |
+| 3 | planning | full-rebuild | 491 | 461 | 0.94x |
+| 4 | planning | continuation | 822 | 762 | 0.93x |
+| 5 | planning | continuation | 815 | 999 | 1.23x |
+| 6 | product-design | full-rebuild | 489 | 1190 | 2.43x |
+| 7 | product-design | continuation | 808 | 1481 | 1.83x |
+| 8 | architecture | full-rebuild | 501 | 1615 | 3.22x |
+| 9 | architecture | continuation | 777 | 1862 | 2.40x |
 
-**Total tokens -- ours: 5162, naive: 8599 (40.0% reduction).**
+**Total tokens -- ours: 5771, naive: 8599 (32.9% reduction).**
 
 Naive's total grows monotonically because nothing is ever removed from its history and there is no budget to enforce it against; ours resets to a small, budgeted rebuild at each approval boundary (turns 1, 3, 6, 8) and only ever resends the delta on continuation turns. The gap widens with every state the project passes through -- by the last state the naive prompt is carrying the full discovery-through-product-design transcript into a turn that only needs the architecture role's own context.
 

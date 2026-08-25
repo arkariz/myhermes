@@ -46,8 +46,6 @@ from pathlib import Path
 _CODE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_CODE_ROOT))
 
-import orchestrator.jobs as jobs_module  # noqa: E402
-import orchestrator.summarizer as summarizer_module  # noqa: E402
 from orchestrator.approvals import PendingAction, resolve_command  # noqa: E402
 from orchestrator.config import AgentsConfig, ModelsConfig  # noqa: E402
 from orchestrator.context.builder import BuildRequest, ContextBuilder  # noqa: E402
@@ -57,7 +55,8 @@ from orchestrator.context.tokens import TokenEstimator  # noqa: E402
 from orchestrator.jobs import TurnRunner  # noqa: E402
 from orchestrator.state_machine import WorkflowDefinition  # noqa: E402
 from orchestrator.store import ProjectStore  # noqa: E402
-from runtime.hermes import HermesResult  # noqa: E402
+import runtime.agent_runtime as agent_runtime_module  # noqa: E402
+from runtime.agent_runtime import HermesResult, InProcessHermesRuntime  # noqa: E402
 
 from benchmark.naive_baseline import run_naive  # noqa: E402
 from benchmark.scenario import SCENARIO, Approval, Turn  # noqa: E402
@@ -103,21 +102,18 @@ def run_ours(state_root: Path) -> list[dict]:
     runner = TurnRunner(
         project_id="benchmark", store=store, workflow=workflow,
         agents=agents, models=models, souls_dir=str(SOULS_DIR),
+        agent_runtime=InProcessHermesRuntime(),
     )
     estimator = runner.estimator
 
     # config/models.yaml routes a real "summarizer" role -- TurnRunner calls
-    # it after every successful turn (orchestrator/summarizer.py). Mock it
-    # the same way as the main hermes_run below, or this benchmark would try
-    # to launch a real (and here, absent) hermes binary purely as a side
-    # effect of using the real config.
-    def fake_summary(request, usage_file=None):
-        return HermesResult(
-            response="(benchmark summary placeholder)",
-            usage={"failed": False}, exit_code=0, session_id=None,
-        )
-    summarizer_module.hermes_run = fake_summary
-
+    # it after every successful turn (orchestrator/summarizer.py), through
+    # the SAME agent_runtime as the main turn now (jobs.py and summarizer.py
+    # used to each import their own independent hermes_run binding, which is
+    # exactly the kind of drift that let a real routing bug ship unnoticed --
+    # see runtime/agent_runtime.py). One fake function has to serve both
+    # calls, so it distinguishes them by prompt content: the summarizer's
+    # own prompt template has a fixed, recognizable opening line.
     responses = iter(step for step in SCENARIO if isinstance(step, Turn))
     results: list[dict] = []
     turn_index = 0
@@ -135,6 +131,11 @@ def run_ours(state_root: Path) -> list[dict]:
         was_resumed = session_before is not None
 
         def fake_run(request, usage_file=None, _resp=canned.response):
+            if request.prompt.startswith("You maintain a running summary"):
+                return HermesResult(
+                    response="(benchmark summary placeholder)",
+                    usage={"failed": False}, exit_code=0, session_id=None,
+                )
             return HermesResult(
                 response=_resp,
                 usage={"failed": False, "session_id": "bench-session"},
@@ -142,7 +143,7 @@ def run_ours(state_root: Path) -> list[dict]:
                 session_id="bench-session",
             )
 
-        jobs_module.hermes_run = fake_run
+        agent_runtime_module.hermes_run = fake_run
         outcome = runner.run_turn(step.human)
 
         prompt = store.read_turn_artifact(outcome.turn_id, "prompt.md") or ""
@@ -258,7 +259,7 @@ def main() -> int:
         denylist_demo = demonstrate_denylist_gap(state_root)
 
     report = render_report(ours, naive, denylist_demo)
-    out_path = REPO_ROOT / "benchmark" / "report.md"
+    out_path = _CODE_ROOT / "benchmark" / "report.md"
     out_path.write_text(report, encoding="utf-8")
     print(report)
     print(f"\nWritten to {out_path}")

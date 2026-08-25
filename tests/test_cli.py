@@ -8,8 +8,8 @@ from dataclasses import replace
 import pytest
 
 import orchestrator.cli as cli_module
-import orchestrator.jobs as jobs_module
-from runtime.hermes import HermesResult
+import runtime.agent_runtime as agent_runtime_module
+from runtime.agent_runtime import HermesResult
 from settings import Settings
 
 
@@ -103,7 +103,7 @@ def test_project_new_twice_raises(cli_env):
 
 def test_turn_runs_and_prints_response(cli_env, monkeypatch, capsys):
     cli_module.main(["project", "new", "toy", "--host-path", str(cli_env / "host" / "toy")])
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Here's the PRD."))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="Here's the PRD."))
 
     rc = cli_module.main(["turn", "toy", "Build a habit tracker."])
     assert rc == 0
@@ -121,7 +121,7 @@ def test_status_reports_workflow_state(cli_env, capsys):
 
 def test_approve_advances_state_on_matching_type(cli_env, monkeypatch, capsys):
     cli_module.main(["project", "new", "toy", "--host-path", "p"])
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
     cli_module.main(["turn", "toy", "Build a habit tracker."])
 
     rc = cli_module.main(["approve", "toy", "APPROVE_PRD"])
@@ -144,7 +144,7 @@ def test_approve_with_wrong_type_is_rejected(cli_env, capsys):
 
 def test_approve_clears_the_session_forcing_a_rebuild_next_state(cli_env, monkeypatch):
     cli_module.main(["project", "new", "toy", "--host-path", "p"])
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(session_id="sess-1"))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(session_id="sess-1"))
     cli_module.main(["turn", "toy", "Build a habit tracker."])
 
     entry = cli_module._registry().get("toy")
@@ -185,11 +185,11 @@ def test_approve_auto_continues_into_a_state_that_runs_an_agent(cli_env, monkeyp
     first turn runs automatically."""
     (cli_env / "config" / "workflow.yaml").write_text(TWO_STATE_WORKFLOW_YAML)
     cli_module.main(["project", "new", "toy", "--host-path", "p"])
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Discovery notes."))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="Discovery notes."))
     cli_module.main(["turn", "toy", "Build a habit tracker."])
     capsys.readouterr()  # drain prior output
 
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success(response="Planning kicked off."))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="Planning kicked off."))
     rc = cli_module.main(["approve", "toy", "APPROVE_DISCOVERY"])
 
     assert rc == 0
@@ -204,12 +204,12 @@ def test_approve_auto_continues_into_a_state_that_runs_an_agent(cli_env, monkeyp
 
 def test_approve_does_not_auto_continue_into_a_terminal_state(cli_env, monkeypatch, capsys):
     cli_module.main(["project", "new", "toy", "--host-path", "p"])
-    monkeypatch.setattr(jobs_module, "hermes_run", fake_success())
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
     cli_module.main(["turn", "toy", "Build a habit tracker."])
     capsys.readouterr()
 
     calls = []
-    monkeypatch.setattr(jobs_module, "hermes_run", lambda request, usage_file=None: calls.append(1) or fake_success()(request, usage_file))
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", lambda request, usage_file=None: calls.append(1) or fake_success()(request, usage_file))
     rc = cli_module.main(["approve", "toy", "APPROVE_PRD"])
 
     assert rc == 0
