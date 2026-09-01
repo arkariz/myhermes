@@ -29,6 +29,7 @@ What's measured:
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -56,8 +57,9 @@ from agentic_dev.domain.context.tokens import TokenEstimator  # noqa: E402
 from agentic_dev.app.turn_runner import TurnRunner  # noqa: E402
 from agentic_dev.domain.workflow import WorkflowDefinition  # noqa: E402
 from agentic_dev.adapters.storage.store import ProjectStore  # noqa: E402
-import agentic_dev.ports.agent_runtime as agent_runtime_module  # noqa: E402
-from agentic_dev.ports.agent_runtime import HermesResult, InProcessHermesRuntime  # noqa: E402
+import agentic_dev.adapters.hermes.runtime as agent_runtime_module  # noqa: E402
+from agentic_dev.adapters.hermes.runtime import InProcessHermesRuntime  # noqa: E402
+from agentic_dev.ports.agent_runtime import HermesResult  # noqa: E402
 
 from benchmark.naive_baseline import run_naive  # noqa: E402
 from benchmark.scenario import SCENARIO, Approval, Turn  # noqa: E402
@@ -95,7 +97,7 @@ def run_ours(state_root: Path) -> list[dict]:
     store.ensure_layout()
     workflow = WorkflowDefinition.load(CONFIG_DIR / "workflow.yaml")
     agents = AgentsConfig.load(CONFIG_DIR / "agents.yaml")
-    models = ModelsConfig.load(CONFIG_DIR / "models.yaml")
+    models = ModelsConfig.load(CONFIG_DIR / "models.yaml", env=os.environ)
     store.write_state({"workflow_state": workflow.initial, "attempts": 0})
 
     _approve(store, workflow, "START_PROJECT")  # backlog -> discovery

@@ -7,8 +7,8 @@ from dataclasses import replace
 
 import pytest
 
+import agentic_dev.adapters.hermes.runtime as agent_runtime_module
 import agentic_dev.entrypoints.cli as cli_module
-import agentic_dev.ports.agent_runtime as agent_runtime_module
 from agentic_dev.ports.agent_runtime import HermesResult
 from agentic_dev.settings import Settings
 

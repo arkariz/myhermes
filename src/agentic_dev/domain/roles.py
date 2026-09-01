@@ -8,11 +8,10 @@ almost never changes; models.yaml changes whenever a provider is swapped).
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -21,11 +20,16 @@ from .context.budget import ReadBudget
 _ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 
 
-def resolve_env_placeholders(value: str) -> str:
+def resolve_env_placeholders(value: str, env: Mapping[str, str]) -> str:
     """Expand `${VAR:-default}` -- models.yaml's own syntax, not YAML's.
 
     Plain yaml.safe_load leaves these as literal strings, so this is a
     small, deliberate second pass rather than a full templating engine.
+
+    `env` is injected rather than read from `os.environ` directly -- this
+    module is domain (L0): it may parse, it may not locate or reach outside
+    itself for its own inputs. The caller (an entrypoint, or a test) decides
+    what "the environment" means here.
 
     An env var that is SET BUT EMPTY still falls back to `default`, not to
     the empty string -- `env.get(var, default)` alone would return "" the
@@ -38,7 +42,7 @@ def resolve_env_placeholders(value: str) -> str:
     """
     def _sub(match: re.Match) -> str:
         var, _, default = match.groups()
-        return os.environ.get(var) or (default or "")
+        return env.get(var) or (default or "")
     return _ENV_PLACEHOLDER.sub(_sub, value)
 
 
@@ -113,14 +117,14 @@ class ModelsConfig:
     routes: dict[str, ModelRoute]
 
     @classmethod
-    def load(cls, path: Path | str) -> "ModelsConfig":
+    def load(cls, path: Path | str, env: Mapping[str, str]) -> "ModelsConfig":
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         routes: dict[str, ModelRoute] = {}
         for role, spec in (raw.get("routing") or {}).items():
             spec = spec or {}
             routes[role] = ModelRoute(
-                provider=resolve_env_placeholders(str(spec.get("provider", ""))),
-                model=resolve_env_placeholders(str(spec.get("model", ""))),
+                provider=resolve_env_placeholders(str(spec.get("provider", "")), env),
+                model=resolve_env_placeholders(str(spec.get("model", "")), env),
             )
         return cls(routes=routes)
 

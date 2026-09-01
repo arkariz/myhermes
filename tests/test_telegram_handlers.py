@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import agentic_dev.ports.agent_runtime as agent_runtime_module
+import agentic_dev.adapters.hermes.runtime as agent_runtime_module
 from agentic_dev.domain.roles import AgentsConfig, ModelsConfig
 from agentic_dev.adapters.registry import ProjectRegistry
 from agentic_dev.domain.workflow import WorkflowDefinition

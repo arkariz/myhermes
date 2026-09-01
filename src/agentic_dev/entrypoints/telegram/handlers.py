@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ from ...app.turn_runner import TurnBlocked, TurnRunner
 from ...adapters.registry import ProjectNotFound
 from ...domain.workflow import StateKind, WorkflowDefinition, WorkflowError
 from ...adapters.storage.store import ProjectStore
-from ...ports.agent_runtime import HttpAgentRuntime, InProcessHermesRuntime
+from ...adapters.hermes.runtime import HttpAgentRuntime, InProcessHermesRuntime
 from ...settings import settings
 
 from .routing import RoutingError, link_project, resolve_project
@@ -102,7 +103,7 @@ def _build_runner(bot_data: dict, project_id: str) -> TurnRunner:
     store, workflow = _store_and_workflow(bot_data, project_id)
     config_dir = _config_dir(bot_data)
     agents = AgentsConfig.load(config_dir / "agents.yaml")
-    models = ModelsConfig.load(config_dir / "models.yaml")
+    models = ModelsConfig.load(config_dir / "models.yaml", env=os.environ)
     runtime_url = settings.runtime_url
     agent_runtime = HttpAgentRuntime(base_url=runtime_url) if runtime_url else InProcessHermesRuntime()
     return TurnRunner(

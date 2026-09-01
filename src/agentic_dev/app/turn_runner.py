@@ -48,7 +48,8 @@ from ..domain.sessions import Session, SessionManager, SessionPolicy
 from ..domain.workflow import State, WorkflowDefinition
 from ..adapters.storage.store import ProjectStore
 from ..ports.indexer import CodebaseIndexer
-from ..ports.agent_runtime import AgentRuntime, HermesRequest, InProcessHermesRuntime
+from ..ports.agent_runtime import AgentRuntime, HermesRequest
+from ..adapters.hermes.runtime import InProcessHermesRuntime
 
 
 class TurnBlocked(Exception):

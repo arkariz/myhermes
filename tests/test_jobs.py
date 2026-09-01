@@ -12,12 +12,13 @@ exhausting attempts block the project.
 
 import pytest
 
-import agentic_dev.ports.agent_runtime as agent_runtime_module
+import agentic_dev.adapters.hermes.runtime as agent_runtime_module
 from agentic_dev.domain.roles import AgentsConfig, ModelsConfig
 from agentic_dev.app.turn_runner import TurnBlocked, TurnRunner
 from agentic_dev.domain.workflow import WorkflowDefinition
 from agentic_dev.adapters.storage.store import ProjectStore
-from agentic_dev.ports.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
+from agentic_dev.adapters.hermes.runtime import HttpAgentRuntime, InProcessHermesRuntime
+from agentic_dev.ports.agent_runtime import HermesResult
 
 
 WORKFLOW_YAML = """
@@ -78,7 +79,7 @@ def runner(tmp_path):
     store = ProjectStore(state_root)
     workflow = WorkflowDefinition.load(tmp_path / "workflow.yaml")
     agents = AgentsConfig.load(tmp_path / "agents.yaml")
-    models = ModelsConfig.load(tmp_path / "models.yaml")
+    models = ModelsConfig.load(tmp_path / "models.yaml", env={})
 
     return TurnRunner(
         project_id="toy", store=store, workflow=workflow, agents=agents,
@@ -264,7 +265,7 @@ def runner_with_summarizer(tmp_path):
     store = ProjectStore(tmp_path / "agent-state")
     workflow = WorkflowDefinition.load(tmp_path / "workflow.yaml")
     agents = AgentsConfig.load(tmp_path / "agents.yaml")
-    models = ModelsConfig.load(tmp_path / "models.yaml")
+    models = ModelsConfig.load(tmp_path / "models.yaml", env={})
     return TurnRunner(
         project_id="toy", store=store, workflow=workflow, agents=agents,
         models=models, souls_dir=str(tmp_path / "souls"),
@@ -688,7 +689,7 @@ def review_runner(tmp_path):
     store = ProjectStore(tmp_path / "agent-state")
     workflow = WorkflowDefinition.load(tmp_path / "workflow.yaml")
     agents = AgentsConfig.load(tmp_path / "agents.yaml")
-    models = ModelsConfig.load(tmp_path / "models.yaml")
+    models = ModelsConfig.load(tmp_path / "models.yaml", env={})
 
     project = tmp_path / "source"
     project.mkdir()

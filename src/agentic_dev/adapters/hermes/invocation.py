@@ -38,55 +38,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from ...ports.agent_runtime import HermesRequest, HermesResult
+
+__all__ = ["HermesInvocationError", "HermesRequest", "HermesResult", "build_argv", "build_env", "run"]
 
 
 class HermesInvocationError(Exception):
     """The hermes binary could not be started at all (not a turn failure)."""
-
-
-@dataclass(frozen=True)
-class HermesRequest:
-    prompt: str
-    home_dir: Path            # HERMES_HOME -- the verified isolation boundary
-    provider: str
-    model: str
-    toolsets: str | None = None      # comma-separated
-    skills: str | None = None        # comma-separated
-    resume_session_id: str | None = None
-    extra_env: dict[str, str] = field(default_factory=dict)
-    cwd: Path | None = None   # where a `file`-toolset write/read call
-                               # resolves ITS OWN relative paths against --
-                               # unset means "whatever this process's own
-                               # cwd happens to be" (e.g. /app in either
-                               # container image), which is never a
-                               # project's real directory. The context
-                               # prompt tells the agent about paths like
-                               # "artifacts/prd.md" or "lib/app.dart" --
-                               # this is what makes those the SAME relative
-                               # path the agent's own tools resolve, rather
-                               # than two different, unconnected notions of
-                               # "here." Found live: a role with the
-                               # `file` toolset granted still had nowhere
-                               # correct to write, because nothing set this.
-
-    @property
-    def is_continuation(self) -> bool:
-        return self.resume_session_id is not None
-
-
-@dataclass
-class HermesResult:
-    response: str
-    usage: dict[str, Any]
-    exit_code: int
-    session_id: str | None
-
-    @property
-    def failed(self) -> bool:
-        return bool(self.usage.get("failed")) or self.exit_code not in (0, 2)
 
 
 def build_argv(request: HermesRequest, *, usage_file: Path | None) -> list[str]:

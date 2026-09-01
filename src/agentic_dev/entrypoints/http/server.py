@@ -32,8 +32,9 @@ from pydantic import BaseModel
 
 from ...adapters.indexing.dart import DartAnalyzerIndexer, DartIndexerError
 from ...adapters.exec import rtk
-from ...adapters.hermes.invocation import HermesInvocationError, HermesRequest
+from ...adapters.hermes.invocation import HermesInvocationError
 from ...adapters.hermes.invocation import run as hermes_run
+from ...ports.agent_runtime import HermesRequest
 
 app = FastAPI(title="agentic-dev runtime")
 

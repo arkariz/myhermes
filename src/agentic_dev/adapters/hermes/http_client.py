@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from .invocation import HermesRequest, HermesResult
+from ...ports.agent_runtime import HermesRequest, HermesResult
 
 
 class RuntimeClientError(Exception):

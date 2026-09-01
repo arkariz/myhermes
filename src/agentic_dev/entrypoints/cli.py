@@ -13,13 +13,14 @@ same TurnRunner, just from a different entry point.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..adapters.indexing.dart import DartAnalyzerIndexer
 from ..adapters.indexing.remote import RemoteIndexer
-from ..ports.agent_runtime import HttpAgentRuntime, InProcessHermesRuntime
+from ..adapters.hermes.runtime import HttpAgentRuntime, InProcessHermesRuntime
 from ..settings import settings
 from ..adapters.telegram.topics import ForumTopicError, create_forum_topic
 
@@ -41,7 +42,7 @@ def _load_agents() -> AgentsConfig:
 
 
 def _load_models() -> ModelsConfig:
-    return ModelsConfig.load(settings.models_file)
+    return ModelsConfig.load(settings.models_file, env=os.environ)
 
 
 def _registry() -> ProjectRegistry:

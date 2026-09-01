@@ -6,11 +6,12 @@ in this codebase.
 
 from __future__ import annotations
 
-import agentic_dev.ports.agent_runtime as agent_runtime_module
+import agentic_dev.adapters.hermes.runtime as agent_runtime_module
 from agentic_dev.domain.roles import ModelRoute
 from agentic_dev.adapters.storage.store import ProjectStore
 from agentic_dev.app.summarizer import build_prompt, summarize, update_summary
-from agentic_dev.ports.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
+from agentic_dev.adapters.hermes.runtime import HttpAgentRuntime, InProcessHermesRuntime
+from agentic_dev.ports.agent_runtime import HermesResult
 
 
 def test_build_prompt_includes_previous_summary_and_new_turn():
