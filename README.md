@@ -19,8 +19,15 @@ pip install -e ".[dev]"
 pytest
 ```
 
-324/324 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
+349/349 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
 invariants below — read it if the prose and the code ever disagree.
+
+The code lives in one layered package, `src/agentic_dev/` — see
+`docs/architecture.md` for the layering contract (`domain → ports →
+adapters → app → entrypoints`) and `docs/adr/0001-layered-package.md` for
+why it's shaped that way. Config, generated state, and your own project
+source live in a **separate sibling repo**, `../agentic-workspace` — see
+"Where does what live," below, before you do anything else.
 
 ### Two real bugs the spike found, both fixed
 
@@ -49,7 +56,7 @@ no stdout separator between a CLI banner and the real response — an early
 fix that looked for that marker on stdout let the banner leak straight into
 the parsed response.
 
-**Fixed** in `runtime/hermes.py`, split along the same seam the state
+**Fixed** in `adapters/hermes/invocation.py`, split along the same seam the state
 machine already uses: full turns (never resume) go through `-z` and get
 `--usage-file` for real; continuation turns go through `chat -q --resume`
 and recover usage after the fact via `hermes sessions export`, with response
@@ -69,25 +76,56 @@ because spending your money without asking isn't something this project
 does on its own behalf. What follows is what's actually left for you.
 
 **Required — nothing here runs a real turn without it:**
-- An API key for whichever provider `config/models.yaml` routes to
-  (defaults to OpenRouter — `OPENROUTER_API_KEY`). Every role's model can
-  be overridden per `.env.example`.
+- An API key for whichever provider `models.yaml` routes to (defaults to
+  OpenRouter — `OPENROUTER_API_KEY`). Every role's model can be
+  overridden per `.env.example`.
 
 **Optional — the CLI works without any of this; only Telegram needs it:**
 - A Telegram bot token (`TELEGRAM_BOT_TOKEN`, from @BotFather) and a group
   with **topics/forum mode enabled**, so `/create` can auto-provision a
   topic per project (`TELEGRAM_FORUM_CHAT_ID`).
 
-**Fastest path — CLI, no Docker, no Telegram:**
+### Where does what live
+
+This code repo (`hermes/`) is pure code — nothing user-specific is meant
+to live in it. A separate sibling repo, `../agentic-workspace`, holds
+everything about *your* setup:
+
+| Location | What | Git |
+|---|---|---|
+| `hermes/.env` | Secrets: `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_FORUM_CHAT_ID`, `AGENTIC_WORKSPACE`, optional `*_MODEL` overrides | **gitignored**, code repo — never commit it |
+| `hermes/.env.example` | The same keys, blank or commented out | tracked, code repo |
+| `../agentic-workspace/config/*.yaml` + `souls/*.md` | Non-secret behavior: role budgets, model routing, the workflow graph, personas | **tracked**, workspace repo — meant to be committed and pushed |
+| `../agentic-workspace/config/projects.yaml` | Project registry (name → host path / state path, plus `telegram_chat_id` — an identifier, not a credential) | tracked, workspace repo |
+| `../agentic-workspace/agent-state/` | Generated per-project state: turn history, indexes, per-project `.hermes-home/` | gitignored, workspace repo |
+| `../agentic-workspace/projects/` | Your actual Flutter/Dart project source, if you point `--host-path` there | gitignored, workspace repo — each project keeps its own `.git` |
+
+Secrets stay in the code repo's `.env` (gitignored since day one) rather
+than the workspace repo specifically *because* the workspace repo is
+meant to be pushed — see `docs/adr/0001-layered-package.md` for the full
+reasoning. `AGENTIC_WORKSPACE` in `.env` is the one line that connects
+the two: unset, it defaults to the sibling `../agentic-workspace`
+resolved relative to this repo.
+
+**A fresh clone needs one bootstrap step before anything else works:**
 ```bash
 pip install -e ".[dev]"
-cp .env.example .env   # fill in OPENROUTER_API_KEY at minimum
-export $(grep -v '^#' .env | xargs)   # or use your own env-loading
-
-python -m orchestrator.cli project new toy --host-path /path/to/a/real/project
-python -m orchestrator.cli turn toy "Build a habit tracker for one user."
-python -m orchestrator.cli status toy
+agentic init-workspace ../agentic-workspace   # creates the sibling repo + template config
+cp .env.example .env                          # fill in OPENROUTER_API_KEY at minimum
+export $(grep -v '^#' .env | xargs)           # or use your own env-loading
 ```
+`agentic init-workspace --check` verifies settings resolution against the
+current environment without creating anything, if you just want to
+confirm a workspace is already found.
+
+**Fastest path — CLI, no Docker, no Telegram** (after the bootstrap above):
+```bash
+agentic project new toy --host-path /path/to/a/real/project
+agentic turn toy "Build a habit tracker for one user."
+agentic status toy
+```
+Or, without the installed console script: `python -m agentic_dev.entrypoints.cli project new toy ...`, etc.
+
 `--host-path` is the project's real source tree on your machine — point
 it at an existing Flutter/Dart project (or any git repo; the Dart indexer
 and diff-aware review just won't have anything Dart-specific to show for
@@ -98,15 +136,17 @@ model calls now that a real key is set.
 
 **Docker Compose path — the full container topology, plus Telegram:**
 ```bash
+agentic init-workspace ../agentic-workspace   # once, if not already done
 cp .env.example .env   # fill in OPENROUTER_API_KEY, and the Telegram vars if using it
 docker compose build
 docker compose up -d
 ```
-Project source goes in `${PROJECTS_DIR:-./data/projects}` on the host —
-it's bind-mounted into both containers at `/workspace/projects`, so
-`--host-path /workspace/projects/<name>` (or `/create` from Telegram,
-which defaults there via `TELEGRAM_DEFAULT_HOST_ROOT`) is how a project
-gets a real body of code to work against. `docker compose logs -f
+`../agentic-workspace` (or wherever `AGENTIC_WORKSPACE` points on the
+host) is bind-mounted into both containers at `/workspace`, so
+`config/`, `agent-state/`, and `projects/` sit as siblings inside the
+container. `--host-path /workspace/projects/<name>` (or `/create` from
+Telegram, which defaults there via `TELEGRAM_DEFAULT_HOST_ROOT`) is how a
+project gets a real body of code to work against. `docker compose logs -f
 orchestrator` is where turns, approvals, and any Telegram activity show up.
 
 **What you get either way**: the full state machine (discovery → planning
@@ -115,42 +155,45 @@ awaiting-merge), typed `/approve` gates, real git history for both
 `artifacts/` and your project's own source, a real Dart-aware codebase
 index once your project has a `pubspec.yaml`, and — if you configure a
 `summarizer` route (on by default) — continuity across session boundaries
-via a running summary. `orchestrator/cli.py status <project>` and the raw
-`agent-state/<project>/events.jsonl` are the two places to see what
-actually happened, at any point.
+via a running summary. `agentic status <project>` and the raw
+`../agentic-workspace/agent-state/<project>/events.jsonl` are the two
+places to see what actually happened, at any point.
 
 ## What's implemented
 
 | Module | Covers |
 |---|---|
-| `config/workflow.yaml` | The state graph — autonomous / collaborative / gate states, retry bounds |
-| `config/agents.yaml` | Role budgets, context mode (assembled vs guided), denylists |
-| `orchestrator/state_machine.py` | Loads + validates the graph; `advance()` refuses anything but a typed approval |
-| `orchestrator/sessions.py` | The 8 boundary triggers deciding resume vs. rebuild of a Hermes session |
-| `orchestrator/context/` | Builder, budget/volatility ordering, denylist enforcement, manifest |
-| `orchestrator/approvals.py` | §31 human-input semantics + `\`\`\`decision` block parsing |
-| `orchestrator/store.py`, `events.py` | Atomic filesystem persistence, append-only event log |
-| `runtime/hermes.py` | Hermes invocation — verified live against real API calls, not just unit-tested against a fake subprocess |
-| `orchestrator/config.py` | Loads `agents.yaml`/`models.yaml`, resolves `${VAR:-default}` |
-| `orchestrator/registry.py` | `config/projects.yaml` — project name → host path / state path |
-| `orchestrator/jobs.py` | `TurnRunner` — one full turn, wired end to end, verified live |
-| `orchestrator/cli.py` | `project new` / `turn` / `approve` / `status`, verified live end to end |
-| `orchestrator/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
-| `orchestrator/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
-| `orchestrator/artifact_versioning.py` | `artifacts/` as a real git repo — `TurnRunner` snapshots it after every successful turn, no empty commits |
-| `telegram_bot/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
-| `runtime/server.py`, `runtime/client.py` | The HTTP boundary for the container topology, called by `jobs.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
-| `compose.yaml`, `docker/agent-runtime/`, `docker/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
-| `tools/dart_indexer/`, `indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
-| `runtime/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Verified live |
-| `runtime/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. Verified live over real HTTP against both a bare `uvicorn` process and the real `agent-runtime` container, running actual `flutter create`/`pub get` |
-| `orchestrator/project_git.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
-| `orchestrator/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
-| `config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
-| `docker/agent-runtime/Dockerfile` | Real Flutter SDK (`stable` channel, host-platform precache) on top of Hermes — `flutter create`/`pub get`/`analyze`/`test` verified live inside the built image and over a real `/exec` HTTP call |
-| `runtime/server.py::/index`, `indexing/remote.py::RemoteIndexer` | Codebase indexing over HTTP for the containerized topology — the orchestrator container has no Dart SDK on purpose, so `RemoteIndexer` calls agent-runtime's real Dart CLI instead of shelling out locally. Verified live |
+| `../agentic-workspace/config/workflow.yaml` | The state graph — autonomous / collaborative / gate states, retry bounds |
+| `../agentic-workspace/config/agents.yaml` | Role budgets, context mode (assembled vs guided), denylists |
+| `agentic_dev/domain/workflow.py` | Loads + validates the graph; `advance()` refuses anything but a typed approval |
+| `agentic_dev/domain/sessions.py` | The 8 boundary triggers deciding resume vs. rebuild of a Hermes session |
+| `agentic_dev/domain/context/` | Builder, budget/volatility ordering, denylist enforcement, manifest |
+| `agentic_dev/domain/approvals.py` | §31 human-input semantics + `\`\`\`decision` block parsing |
+| `agentic_dev/adapters/storage/store.py`, `events.py` | Atomic filesystem persistence, append-only event log |
+| `agentic_dev/adapters/hermes/invocation.py` | Hermes invocation — verified live against real API calls, not just unit-tested against a fake subprocess |
+| `agentic_dev/domain/roles.py` | Loads `agents.yaml`/`models.yaml`, resolves `${VAR:-default}` |
+| `agentic_dev/adapters/registry.py` | `../agentic-workspace/config/projects.yaml` — project name → host path / state path |
+| `agentic_dev/app/turn_runner.py` | `TurnRunner` — one full turn, wired end to end, verified live |
+| `agentic_dev/entrypoints/cli.py` | `project new` / `turn` / `approve` / `status` / `init-workspace`, verified live end to end |
+| `agentic_dev/app/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
+| `agentic_dev/app/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
+| `agentic_dev/adapters/git/artifacts.py` | `artifacts/` as a real git repo — `TurnRunner` snapshots it after every successful turn, no empty commits |
+| `agentic_dev/adapters/telegram/topics.py`, `agentic_dev/entrypoints/telegram/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
+| `agentic_dev/entrypoints/http/server.py`, `agentic_dev/adapters/hermes/http_client.py` | The HTTP boundary for the container topology, called by `turn_runner.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
+| `compose.yaml`, `deploy/agent-runtime/`, `deploy/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
+| `tools/dart_indexer/`, `agentic_dev/ports/indexer.py`, `agentic_dev/adapters/indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
+| `agentic_dev/adapters/exec/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Verified live |
+| `agentic_dev/entrypoints/http/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. Verified live over real HTTP against both a bare `uvicorn` process and the real `agent-runtime` container, running actual `flutter create`/`pub get` |
+| `agentic_dev/adapters/git/project.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
+| `agentic_dev/adapters/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
+| `../agentic-workspace/config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
+| `deploy/agent-runtime/Dockerfile` | Real Flutter SDK (`stable` channel, host-platform precache) on top of Hermes — `flutter create`/`pub get`/`analyze`/`test` verified live inside the built image and over a real `/exec` HTTP call |
+| `agentic_dev/entrypoints/http/server.py::/index`, `agentic_dev/adapters/indexing/remote.py::RemoteIndexer` | Codebase indexing over HTTP for the containerized topology — the orchestrator container has no Dart SDK on purpose, so `RemoteIndexer` calls agent-runtime's real Dart CLI instead of shelling out locally. Verified live |
 | `compose.yaml` project-source volume + orchestrator container fixes | Shared `/workspace/projects` volume, `git` added to the orchestrator image, `summarizer.py` routed through `runtime_url` — three real bugs found and fixed by actually running the compose stack. Verified live end to end |
 | `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
+
+See `docs/architecture.md` for how these modules are organized into layers
+and why imports may only point downward between them.
 
 ## What's still a spec, not code
 
@@ -160,7 +203,7 @@ actually happened, at any point.
 - No role's toolset yet routes a terminal command through `/exec` instead
   of Hermes's own CLI sandbox — the endpoint exists and is verified live,
   but nothing calls it end to end from a real turn.
-- Android SDK + JDK in `docker/agent-runtime/Dockerfile` — `flutter build
+- Android SDK + JDK in `deploy/agent-runtime/Dockerfile` — `flutter build
   apk` needs both; `pub get`/`analyze`/`test` don't and already work.
   A genuinely large, separate download left for its own pass.
 - Branch checkout in `project_git.py` — not built, and nothing in this
@@ -179,16 +222,20 @@ actually happened, at any point.
 
 ## Phase 1 is done and verified live
 
-`orchestrator/jobs.py` (`TurnRunner`) ties state machine + sessions + context
-builder + `runtime/hermes.py` + store into one turn. `orchestrator/cli.py`
-drives it: `project new`, `turn`, `approve`, `status`. `orchestrator/config.py`
-and `orchestrator/registry.py` load `agents.yaml`/`models.yaml`/`projects.yaml`.
-169/169 tests pass, all with `hermes_run` monkeypatched — no subprocess, no
-network call, no cost.
+`agentic_dev/app/turn_runner.py` (`TurnRunner`) ties state machine + sessions
++ context builder + `agentic_dev/adapters/hermes/invocation.py` + store into
+one turn. `agentic_dev/entrypoints/cli.py` drives it: `project new`, `turn`,
+`approve`, `status`. `agentic_dev/domain/roles.py` and
+`agentic_dev/adapters/registry.py` load `agents.yaml`/`models.yaml`/`projects.yaml`.
+169/169 tests pass at the time, all with `hermes_run` monkeypatched — no
+subprocess, no network call, no cost (the suite has since grown; see
+"Status," above, for the current total).
 
 **Then the whole thing was run for real**, no mocks, against the actual
-CLI and OpenRouter (`docker/spike/demo.py`): `project new` → `approve
-START_PROJECT` → two discovery turns (the second one a genuine
+CLI and OpenRouter (via a one-off demo script that has since been deleted
+along with the rest of `docker/spike/` — see `docs/adr/0001-layered-package.md`;
+the same loop is what "Fastest path" above walks you through): `project new`
+→ `approve START_PROJECT` → two discovery turns (the second one a genuine
 `chat -q --resume`, confirmed by the response correctly incorporating the
 first turn's requirement) → `approve APPROVE_DISCOVERY` → `status` showing
 `session: (none)` (the boundary invalidation firing live, not just in a
@@ -200,14 +247,14 @@ behaved exactly as designed.
 ## Incremental summarization (§17.3)
 
 The one piece of Phase 1's original Step 6 that was scoped but never built
-until now: `orchestrator/summarizer.py`. After every successful turn (not
+until now: `agentic_dev/app/summarizer.py`. After every successful turn (not
 just at boundaries -- conditioning it on `SessionManager`'s own boundary
 decision would couple two things that don't need to know about each other,
-and it's one cheap call on a cheap model, `config/models.yaml` routes
+and it's one cheap call on a cheap model, `models.yaml` routes
 `summarizer` to `deepseek-v3`), `TurnRunner` folds the new turn into a
 running per-state summary: `summarize(previous_summary + new_turn)`,
 preserving decisions, open questions, constraints, rejected alternatives,
-artifact status, and next actions. `context/providers.py::SummaryProvider`
+artifact status, and next actions. `agentic_dev/adapters/context/providers.py::SummaryProvider`
 then feeds that summary into every later context build (layer 4, alongside
 recent turns, per the brief's own cache-layout grouping).
 
@@ -223,92 +270,97 @@ Telegram's forum-topic auto-creation.
 ## The runtime HTTP boundary
 
 ```bash
-uvicorn runtime.server:app --port 8000
+uvicorn agentic_dev.entrypoints.http.server:app --port 8000
 ```
 
-`runtime/server.py` — `POST /run` wraps `runtime.hermes.run()` behind HTTP,
+`agentic_dev/entrypoints/http/server.py` — `POST /run` wraps
+`agentic_dev.adapters.hermes.invocation.run()` behind HTTP,
 unchanged: same argv selection, same `HERMES_HOME` env handling, same
 response cleaning. This is the container-topology boundary the brief calls
 for — the orchestrator has no Docker socket (least privilege), so it can't
 `docker exec` into agent-runtime; agent-runtime exposes this instead.
 
 Verified live: started the real server, hit `/health`, then `POST /run`
-with no `hermes` binary installed on this host (it only exists inside
-`docker/spike/`'s container) — got back a real `HTTP 502` with
+with no `hermes` binary installed on this host (it only exists inside the
+`agent-runtime` container) — got back a real `HTTP 502` with
 `"failed to launch hermes: [WinError 2] The system cannot find the file
 specified"`, proving the request parsing → invocation attempt → error
 mapping path end to end, not just against a mock. 7 tests
 (`tests/test_server.py`) cover the same paths with `hermes_run` mocked for
 speed and repeatability.
 
-**`orchestrator/jobs.py` now calls this over HTTP when configured to.**
-`runtime/client.py`'s `run()` is the same contract as `runtime.hermes.run()`
-(same request shape, same `HermesResult`), just reachable over HTTP.
-`TurnRunner` takes an optional `runtime_url`; unset (the default), it
-calls `runtime.hermes.run()` in-process exactly as before — every prior
-live run stays reproducible with zero config. Set `AGENTIC_RUNTIME_URL`
-(read by both `orchestrator/cli.py` and `telegram_bot/handlers.py`) and
-every Hermes invocation routes through the HTTP server instead, no other
+**`agentic_dev/app/turn_runner.py` now calls this over HTTP when configured
+to.** `agentic_dev/adapters/hermes/http_client.py`'s `run()` is the same
+contract as `agentic_dev.adapters.hermes.invocation.run()` (same request
+shape, same `HermesResult`), just reachable over HTTP. `TurnRunner` takes an
+optional `runtime_url`; unset (the default), it calls the in-process
+invocation exactly as before — every prior live run stays reproducible with
+zero config. Set `AGENTIC_RUNTIME_URL` (read by both
+`agentic_dev/entrypoints/cli.py` and `agentic_dev/entrypoints/telegram/handlers.py`)
+and every Hermes invocation routes through the HTTP server instead, no other
 code changes needed.
 
 Verified live end to end, across real process boundaries: started the real
-server, ran `orchestrator.cli project new` → `approve` → `turn` in a
-**separate CLI process** with `AGENTIC_RUNTIME_URL` pointing at it. The CLI
-process's `httpx` call reached the server process, which attempted a real
-(and here, absent) `hermes` launch, returned a real 502, which
-`runtime/client.py` turned into `RuntimeClientError`, which `jobs.py`
-re-raised as a `RuntimeError` that surfaced cleanly in the CLI's own
-traceback — the full chain, not simulated in one process. 5 more tests
-(`tests/test_runtime_client.py`) plus 3 in `test_jobs.py` cover the
-in-process/HTTP branch selection and error mapping with things mocked.
+server, ran `agentic project new` → `approve` → `turn` in a **separate CLI
+process** with `AGENTIC_RUNTIME_URL` pointing at it. The CLI process's
+`httpx` call reached the server process, which attempted a real (and here,
+absent) `hermes` launch, returned a real 502, which
+`adapters/hermes/http_client.py` turned into `RuntimeClientError`, which
+`turn_runner.py` re-raised as a `RuntimeError` that surfaced cleanly in the
+CLI's own traceback — the full chain, not simulated in one process. 5 more
+tests (`tests/test_runtime_client.py`) plus 3 in `tests/test_jobs.py`
+(named for the module's pre-refactor path; covers `turn_runner.py`) cover
+the in-process/HTTP branch selection and error mapping with things mocked.
 
 ## The real container topology
 
 ```bash
 docker compose build
 docker compose up -d agent-runtime
-docker compose run --rm orchestrator python -m orchestrator.cli project new toy \
+docker compose run --rm orchestrator agentic project new toy \
   --host-path /workspace/projects/toy --state-path /workspace/agent-state/toy
 ```
 
-`compose.yaml` + `docker/agent-runtime/Dockerfile` (Hermes CLI + a real
-Flutter SDK, serves `runtime/server.py`) + `docker/orchestrator/Dockerfile`
-(state machine, context builder, Telegram bot — no Hermes CLI, no Docker
-socket). Smaller than the plan's original diagram, deliberately: no shared
-Hermes-profile volume (the plan names one; mounting it would reintroduce
-the exact cross-project memory leak the Phase 1 spike found and fixed —
-every request's `home_dir` already lives under the agent-state volume both
-containers mount, so no separate profile volume is needed or safe), and no
-gateway service (never implemented; Hermes calls the provider directly).
+`compose.yaml` + `deploy/agent-runtime/Dockerfile` (Hermes CLI + a real
+Flutter SDK, serves `agentic_dev/entrypoints/http/server.py`) +
+`deploy/orchestrator/Dockerfile` (state machine, context builder, Telegram
+bot — no Hermes CLI, no Docker socket). Smaller than the plan's original
+diagram, deliberately: no shared Hermes-profile volume (the plan names one;
+mounting it would reintroduce the exact cross-project memory leak the
+Phase 1 spike found and fixed — every request's `home_dir` already lives
+under the agent-state volume both containers mount, so no separate profile
+volume is needed or safe), and no gateway service (never implemented;
+Hermes calls the provider directly).
 
-**Both containers now mount a shared project-source volume** at
-`/workspace/projects` (`${PROJECTS_DIR:-./data/projects}` on the host) —
-closing a gap that was invisible from host/CLI-mode testing alone. Closing
-it surfaced three real container-only bugs, found by actually running the
-compose stack rather than trusting that host-mode success implied
-container-mode success:
+**Both containers mount the same workspace volume** at `/workspace`
+(`${AGENTIC_WORKSPACE:-../agentic-workspace}` on the host, so `projects/`
+ends up at `/workspace/projects`) — closing a gap that was invisible from
+host/CLI-mode testing alone. Closing it originally surfaced three real
+container-only bugs, found by actually running the compose stack rather
+than trusting that host-mode success implied container-mode success (fixed
+long since, kept here as a record of what actually broke):
 
-1. `orchestrator/cli.py` imports `indexing.dart_adapter` unconditionally,
-   but the orchestrator image never copied `indexing/` — `project new`
-   couldn't even start.
+1. The orchestrator's entrypoint imported the Dart indexing adapter
+   unconditionally, but the orchestrator image never copied that code in —
+   `project new` couldn't even start.
 2. Fixing that would still fail: `DartAnalyzerIndexer` shells out to a
    local Dart CLI the orchestrator image doesn't have, by design (the
    toolchain lives only in agent-runtime). Fixed properly, not papered
    over — built the `POST /index` endpoint the plan's original diagram
-   names, backed by `indexing/remote.py::RemoteIndexer` (same
-   `CodebaseIndexer` shape as `DartAnalyzerIndexer`). `cli.py`/
-   `handlers.py` now pick `RemoteIndexer` over `DartAnalyzerIndexer`
+   names, backed by `agentic_dev/adapters/indexing/remote.py::RemoteIndexer`
+   (same `CodebaseIndexer` shape as `DartAnalyzerIndexer`). The CLI and the
+   Telegram handlers now pick `RemoteIndexer` over `DartAnalyzerIndexer`
    based on `AGENTIC_RUNTIME_URL`, the same way they already pick between
-   `runtime.hermes.run()` and `runtime.client.run()`.
+   the in-process and HTTP Hermes runtimes.
 3. The orchestrator's `python:3.12-slim` base had no `git` at all —
-   `artifact_versioning.py`, `project_git.py`, and
-   `indexing/freshness.py`'s `current_git_revision()` would all have
-   failed the moment any of them ran there. Added it.
-4. `orchestrator/summarizer.py` always called Hermes in-process with no
-   `runtime_url` support — since `config/models.yaml` configures a
-   `summarizer` route by default, every successful turn in the
-   orchestrator container would have crashed there. Given the same
-   `runtime_url` → `runtime/client.py` routing `jobs.py` already has.
+   `adapters/git/artifacts.py`, `adapters/git/project.py`, and
+   `adapters/indexing/freshness.py`'s `current_git_revision()` would all
+   have failed the moment any of them ran there. Added it.
+4. The summarizer always called Hermes in-process with no `runtime_url`
+   support — since `models.yaml` configures a `summarizer` route by
+   default, every successful turn in the orchestrator container would have
+   crashed there. Given the same `runtime_url` routing `turn_runner.py`
+   already has.
 
 **Verified live, in full**: real `docker compose build` of both images; a
 real toy Flutter-shaped git project written into the shared volume;
@@ -317,11 +369,11 @@ back real nodes from the real Dart CLI; a real `TurnRunner.run_turn()`
 inside the orchestrator container against that project (only the main
 Hermes call mocked) with the builder's file write, `SOURCE_COMMITTED`, and
 a real `git-diff` manifest entry all working exactly as in host-mode
-testing; and finally, with *nothing* mocked, `python -m orchestrator.cli
-turn toy "..."` inside the real container producing a clean `"No LLM
-provider configured"` failure via a real HTTP round trip to agent-runtime's
-real `hermes` subprocess — proof the whole chain is wired correctly, with
-only a real API key missing.
+testing; and finally, with *nothing* mocked, `agentic turn toy "..."`
+inside the real container producing a clean `"No LLM provider configured"`
+failure via a real HTTP round trip to agent-runtime's real `hermes`
+subprocess — proof the whole chain is wired correctly, with only a real
+API key missing.
 
 One thing this caught live, unrelated to the above: MSYS/Git Bash's
 path-mangling (the same class of bug the Phase 1 spike hit with Docker
@@ -345,11 +397,11 @@ enums, extensions, top-level functions, and methods nested under their
 class; edges for `imports`, `declares`, `extends`, `implements`, `with`.
 AST-only, not resolved analysis — no `flutter pub get` required on the
 *target* project first, which is what makes it fast enough to consider
-running more than once at setup. `indexing/dart_adapter.py` calls it via
-subprocess and normalizes the JSON into `indexing/port.py`'s
-`IndexNode`/`IndexEdge` (the `CodebaseIndexer` protocol the plan
-describes, so a future `GraphifyIndexer` for non-Dart repos plugs into the
-same shape).
+running more than once at setup. `agentic_dev/adapters/indexing/dart.py`
+calls it via subprocess and normalizes the JSON into
+`agentic_dev/ports/indexer.py`'s `IndexNode`/`IndexEdge` (the
+`CodebaseIndexer` protocol the plan describes, so a future
+`GraphifyIndexer` for non-Dart repos plugs into the same shape).
 
 Verified live twice, not just unit-tested: the Dart CLI directly against a
 toy Flutter-shaped file — correct widget/enum/mixin/function
@@ -362,19 +414,20 @@ of bare `dart` resolves it fine via `PATHEXT`); set `DART_EXECUTABLE` to
 the `.bat` on Windows. 10 Dart tests (`tools/dart_indexer/test/`) + 9
 Python tests (`tests/test_dart_adapter.py`, subprocess mocked).
 
-**Now wired into `TurnRunner`.** `indexing/freshness.py::ensure_fresh()`
-rebuilds only when a project's `git rev-parse HEAD` has actually moved
-since the last cached index — freshness/incremental indexing by git
-commit, the gap the brief calls out Pang leaving open.
-`context/providers.py::IndexProvider` hands the resulting file inventory
+**Now wired into `TurnRunner`.**
+`agentic_dev/adapters/indexing/freshness.py::ensure_fresh()` rebuilds only
+when a project's `git rev-parse HEAD` has actually moved since the last
+cached index — freshness/incremental indexing by git commit, the gap the
+brief calls out Pang leaving open.
+`agentic_dev/adapters/context/providers.py::IndexProvider` hands the resulting file inventory
 to guided-retrieval roles as references (paths, not embedded content).
 `TurnRunner._current_index_revision()` computes the real value every turn
 for a guided role with a project source configured, persists it to
 `state.yaml`, and feeds it to `SessionManager.decide()` — the
 `index_revision` boundary trigger (one of the original 8) is exercised
 against a real indexer's output for the first time, not a synthetic
-string. Wired by default in both `orchestrator/cli.py` and
-`telegram_bot/handlers.py`; inert (degrades to "no index," never breaks a
+string. Wired by default in both `agentic_dev/entrypoints/cli.py` and
+`agentic_dev/entrypoints/telegram/handlers.py`; inert (degrades to "no index," never breaks a
 turn) for a non-Dart project or a host with no Dart SDK.
 
 **Verified live**: a real `TurnRunner`, a real toy Flutter-shaped git
@@ -413,14 +466,15 @@ scope).
 
 ## Phase 5: the builder actually commits, and reviewer/QA see a real diff
 
-`orchestrator/project_git.py` is real git integration against the
+`agentic_dev/adapters/git/project.py` is real git integration against the
 **project's own source tree** — not agent-state's own git repos (see
-`artifact_versioning.py`, a separate repo scoped to `artifacts/`). It
-never `git init`s a project: unlike `artifacts/`, which this system owns
-outright, the project source is the user's, so a non-git project source
-degrades to "no commit, no diff" — the same convention
-`indexing/freshness.py` already established for `current_git_revision()`
-— rather than initializing a repo nobody asked for.
+`agentic_dev/adapters/git/artifacts.py`, a separate repo scoped to
+`artifacts/`). It never `git init`s a project: unlike `artifacts/`, which
+this system owns outright, the project source is the user's, so a non-git
+project source degrades to "no commit, no diff" — the same convention
+`agentic_dev/adapters/indexing/freshness.py` already established for
+`current_git_revision()` — rather than initializing a repo nobody asked
+for.
 
 `TurnRunner` now:
 
@@ -440,13 +494,13 @@ degrades to "no commit, no diff" — the same convention
   still producing the change.
 
 Also found and fixed while finishing this phase: `builder`, `reviewer`,
-and `qa` had been fully configured in `config/agents.yaml` and
-`config/workflow.yaml` with **no soul file** to match — `RoleSoulProvider`
-degrades that to silently contributing nothing rather than erroring, so
-three of the seven agent-running roles had no persona at all and nothing
-surfaced it. `config/souls/{builder,reviewer,qa}.md` close the gap, and
-`tests/test_souls.py` asserts every agent-running workflow role has a
-soul file so it can't happen silently again.
+and `qa` had been fully configured in `agents.yaml` and `workflow.yaml`
+with **no soul file** to match — `RoleSoulProvider` degrades that to
+silently contributing nothing rather than erroring, so three of the seven
+agent-running roles had no persona at all and nothing surfaced it.
+`../agentic-workspace/config/souls/{builder,reviewer,qa}.md` close the
+gap, and `tests/test_souls.py` asserts every agent-running workflow role
+has a soul file so it can't happen silently again.
 
 **Verified live**: a real toy Flutter-shaped git project, the real Dart
 indexer, a real `implementation → review` turn sequence (only
@@ -458,7 +512,7 @@ and the reviewer's actual rendered prompt embedded the real diff text
 
 ## RTK: tool-output compression, now served over HTTP
 
-`runtime/rtk.py` implements the job the plan's "RTK (Rust Token Killer)"
+`agentic_dev/adapters/exec/rtk.py` implements the job the plan's "RTK (Rust Token Killer)"
 concept names — shrinking verbose tool output before it re-enters
 context — in Python rather than vendoring the external Rust binary the
 brief references. `compress()` strips ANSI escape codes, collapses runs of
@@ -472,19 +526,19 @@ should be dropped if it doesn't pay off, which only a real number can
 decide. 8 tests, including one against a real subprocess printing 500
 identical lines (>90% measured reduction, not asserted from a fixture).
 
-**`runtime/server.py::POST /exec`** is the endpoint the plan names for
-RTK-wrapped `flutter pub get/analyze/test/build apk`: it runs a literal
-`argv` (a list, not a shell string — nothing for a shell to reinterpret)
-in a given `cwd` and returns `rtk.run()`'s compressed output plus the
-measured ratio. Generic on purpose — the endpoint doesn't need to know
-which specific tool it's running, only how to run and compress *a*
+**`agentic_dev/entrypoints/http/server.py::POST /exec`** is the endpoint
+the plan names for RTK-wrapped `flutter pub get/analyze/test/build apk`: it
+runs a literal `argv` (a list, not a shell string — nothing for a shell to
+reinterpret) in a given `cwd` and returns `rtk.run()`'s compressed output
+plus the measured ratio. Generic on purpose — the endpoint doesn't need to
+know which specific tool it's running, only how to run and compress *a*
 command, whether that ends up being `flutter`, `git`, or `rg`.
 
 **Verified live three times now**: FastAPI's `TestClient` (in-process, 5
 tests in `tests/test_server.py`); a real `uvicorn` subprocess reached over
 an actual HTTP call from a separate Python process (500 repeated lines
 came back compressed to one, 99.66% measured reduction); and, once the
-Flutter SDK landed in `docker/agent-runtime/Dockerfile` (next section), a
+Flutter SDK landed in `deploy/agent-runtime/Dockerfile` (next section), a
 real `POST /exec` against the running container itself — actual `flutter
 create` and `flutter pub get` executed inside the container over the
 wire, RTK-compressed output round-tripping back correctly.
@@ -497,18 +551,22 @@ existing and working.
 
 ## Phase 6: a real Flutter SDK inside agent-runtime
 
-`docker/agent-runtime/Dockerfile` now clones the `stable` channel to
+`deploy/agent-runtime/Dockerfile` now clones the `stable` channel to
 `/opt/flutter` and runs `flutter precache --no-android --no-ios` — engine
 artifacts for the host platform only, deliberately skipping the Android
 and iOS toolchains (see below). Found and fixed along the way: the first
 build attempt failed outright because `flutter precache` needs `unzip` to
 extract the Dart SDK, which wasn't in the base image's package list.
 
-Also caught here: the image's `COPY` for `runtime/` never included
-`runtime/rtk.py`, so the `/exec` route added in the previous pass would
-have failed to import the moment this image was actually built — a gap
-between "the endpoint's tests pass" and "the endpoint works in the image
-that's supposed to serve it," closed before it could surprise anyone.
+Also caught here (at the time, under the old flat `runtime/` layout): the
+image's `COPY` never included the RTK module, so the `/exec` route added
+in the previous pass would have failed to import the moment this image was
+actually built — a gap between "the endpoint's tests pass" and "the
+endpoint works in the image that's supposed to serve it," closed before it
+could surprise anyone. The layered package's `pip install ".[x]"` install
+(see `deploy/agent-runtime/Dockerfile`) plus its import-smoke `RUN` line
+retire this whole bug class structurally — a selectively-missing module
+now fails the build, not the first request.
 
 **Verified live twice**: first a plain `docker run` shell directly against
 the built image — real `flutter create`, `flutter pub get`, `flutter
@@ -561,17 +619,18 @@ own accounting, at the cost of real API spend.
 ```bash
 export TELEGRAM_BOT_TOKEN=<from @BotFather>
 export TELEGRAM_FORUM_CHAT_ID=<optional -- for CLI-side auto-topic-creation>
-export TELEGRAM_DEFAULT_HOST_ROOT=<optional -- default: ~/agentic-dev-projects>
-python -m telegram_bot.bot
+export TELEGRAM_DEFAULT_HOST_ROOT=<optional -- default: /workspace/projects>
+agentic-bot
+# or: python -m agentic_dev.entrypoints.telegram.bot
 ```
 
-Named `telegram_bot/`, not `telegram/` — the plan's original name collides
-with the installed `python-telegram-bot` package, which imports as
-`telegram`. A local `telegram/` directory on `sys.path` would have shadowed
-it for every import in the process, including the bot's own
-`from telegram import ...`. Caught before it shipped, not after.
+The bot module lives at `agentic_dev/entrypoints/telegram/bot.py`, not a
+top-level `telegram/` — the plan's original flat-layout name would have
+collided with the installed `python-telegram-bot` package, which imports
+as `telegram`; nesting it under `entrypoints/` (as the layering already
+requires) sidesteps that for free. Caught before it shipped, not after.
 
-`telegram_bot/bot.py` drives the exact same `TurnRunner` as the CLI, from a
+`agentic_dev/entrypoints/telegram/bot.py` drives the exact same `TurnRunner` as the CLI, from a
 different entry point:
 
 - **`/create` — new project, new forum topic, both from inside Telegram.**
@@ -580,21 +639,21 @@ different entry point:
   the project (default host path via `TELEGRAM_DEFAULT_HOST_ROOT`, since a
   chat message can't hand over a filesystem path the way `--host-path`
   does), auto-clears a leading gate state if the workflow has one, creates
-  the topic via `telegram_bot/topics.py::create_forum_topic()` (plain
-  synchronous `httpx` against the Bot API — no event loop needed for one
-  REST call), links it, and posts a confirmation *inside the new topic*. A
-  Telegram-side failure (chat not a forum, bot not an admin) is reported
-  but never discards the project it already created.
+  the topic via `agentic_dev/adapters/telegram/topics.py::create_forum_topic()`
+  (plain synchronous `httpx` against the Bot API — no event loop needed for
+  one REST call), links it, and posts a confirmation *inside the new
+  topic*. A Telegram-side failure (chat not a forum, bot not an admin) is
+  reported but never discards the project it already created.
 - **Same automation from the CLI.** Set `TELEGRAM_FORUM_CHAT_ID` alongside
-  `TELEGRAM_BOT_TOKEN` and `orchestrator/cli.py project new` does the same
+  `TELEGRAM_BOT_TOKEN` and `agentic project new` does the same
   create-topic-and-link step for a project made outside Telegram. Optional
   either way: with neither env var set, project creation is unchanged.
 - `/link <project_id>` still works for manual linking (or for a topic
-  created by hand) — `telegram_bot/routing.py`, backed by the same
+  created by hand) — `agentic_dev/entrypoints/telegram/routing.py`, backed by the same
   `ProjectRegistry.link_telegram()`. No project-name prefix needed on later
   messages either way.
 - `/create`, `/link`, `/status` show up as Telegram's own autocomplete
-  suggestions when typing `/` — `telegram_bot/bot.py`'s `COMMANDS` list is
+  suggestions when typing `/` — `agentic_dev/entrypoints/telegram/bot.py`'s `COMMANDS` list is
   the single source for both `CommandHandler` registration and a
   `setMyCommands` call in `post_init` (has to run there, not at build time:
   it's an API call, needs the bot's event loop already up). Verified live
@@ -612,7 +671,7 @@ different entry point:
   queue is a safe superset of that.
 - Every response in a state that requires approval gets an inline "Approve"
   button. Clicking it goes through the same `apply_approval()` the CLI uses
-  (`orchestrator/approval_flow.py`, extracted so both entry points enforce
+  (`agentic_dev/app/approval_flow.py`, extracted so both entry points enforce
   identical §31 semantics), via `resolve_callback()` — which is what makes
   the plan's own acceptance test possible: **a button referencing a stale
   artifact revision is rejected**, not silently approved against whatever
@@ -623,11 +682,13 @@ Tested with fakes for `Update`/`context` (`tests/test_telegram_handlers.py`,
 
 ### Verified live against a real bot and a real chat
 
-`docker/spike/telegram_live_test.py` runs the real bot (real long-polling
-against api.telegram.org, real `/link`, real inline button) with `hermes_run`
-mocked — Hermes itself was already verified live in Phase 1; the only new
-surface here is Telegram, so that's the only thing worth spending a real
-run on. `/link toy` → a plain-text message → a real click on the "Approve"
+A one-off live-test script (since deleted along with the rest of
+`docker/spike/` — see `docs/adr/0001-layered-package.md`) ran the real bot
+(real long-polling against api.telegram.org, real `/link`, real inline
+button) with `hermes_run` mocked — Hermes itself was already verified live
+in Phase 1; the only new surface here was Telegram, so that's the only
+thing worth spending a real run on. `/link toy` → a plain-text message →
+a real click on the "Approve"
 button all went through, confirmed from `events.jsonl` afterward, not just
 from what Telegram showed on screen:
 
@@ -649,9 +710,10 @@ through `resolve_callback()`.
 client) logs the full request URL at `INFO`, and every Bot API URL embeds
 the token (`api.telegram.org/bot<TOKEN>/getMe`) — so `logging.basicConfig
 (level=logging.INFO)` alone leaks the token into any log output. Found the
-hard way on the first run. **Fixed** in both `telegram_bot/bot.py` and the
-live-test script: `logging.getLogger("httpx").setLevel(logging.WARNING)`
-right after configuring root logging, unconditionally.
+hard way on the first run. **Fixed** in both
+`agentic_dev/entrypoints/telegram/bot.py` and the (since-deleted) live-test
+script: `logging.getLogger("httpx").setLevel(logging.WARNING)` right after
+configuring root logging, unconditionally.
 
 **`/create` verified live too**, same script, real Bot API: `/create` →
 typed a name in reply → a real forum topic appeared in the group, the

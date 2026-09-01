@@ -398,3 +398,65 @@ work in Phase 1 already covers most of it:
       a clean `"No LLM provider configured"` failure via the real HTTP
       round trip to agent-runtime's real `hermes` subprocess -- proof the
       whole chain is wired correctly, with only a real API key missing.
+
+## Layered-package refactor (Phases 0-8) — complete
+
+Everything above this line describes the codebase as it was built,
+under the flat `orchestrator/`/`runtime/`/`indexing/`/`telegram_bot/`
+layout -- left as-is, since it's a record of what actually happened at
+the time, not a description of the current tree. What's true now:
+
+- [x] **Structural move.** All application code now lives under one
+      installable package, `src/agentic_dev/`, split into five ranked
+      layers (`domain → ports → adapters → app → entrypoints`). Every
+      module named in the phase entries above by its old flat path
+      (`orchestrator/jobs.py`, `runtime/hermes.py`, `telegram_bot/topics.py`,
+      `indexing/dart_adapter.py`, ...) moved to the equivalent layered
+      location -- see `README.md`'s "What's implemented" table for the
+      current path of each, and `docs/architecture.md` for the layering
+      contract itself.
+- [x] **The one real import cycle is gone.** `orchestrator/cli.py`
+      importing `telegram_bot.topics` doesn't exist anymore -- the
+      Telegram topic adapter moved to `adapters/telegram/topics.py`, a
+      same-or-lower-rank import from `entrypoints/cli.py`.
+- [x] **Guard test.** `tests/test_architecture.py` -- an AST walk, no
+      third-party dependency -- enforces downward-only imports, a pure
+      `domain/`, and that only `settings.py` ever evaluates `__file__`.
+      Runs as part of the normal suite.
+- [x] **Workspace extracted to a separate sibling repo,** `../agentic-workspace`.
+      `config/` is tracked there; `agent-state/` and `projects/` are
+      gitignored. `agentic init-workspace <path>` bootstraps a fresh one
+      from a template shipped inside the package. This retires the
+      tracked-and-mutated `config/projects.yaml` problem called out in
+      Phase 0 above -- the file that gets mutated at runtime now lives in
+      a repo whose entire purpose is to hold the user's own local state.
+- [x] **Secrets down to one file.** `secrets/` and `docker/spike/`
+      (including `docker/spike/secrets/`) are deleted outright; the only
+      remaining secrets file is this repo's own gitignored `.env`. Kept
+      out of the workspace repo on purpose, since that repo is meant to be
+      pushed -- see `docs/adr/0001-layered-package.md`.
+- [x] **Docker images rebuilt from `pyproject.toml` extras.** Dockerfiles
+      moved to `deploy/{orchestrator,agent-runtime}/Dockerfile`, each now
+      does `pip install ".[orchestrator]"` / `".[runtime]"` instead of a
+      hand-duplicated dependency list, plus an import-smoke `RUN` line
+      that turns a selective-COPY-style bug (the class that once shipped
+      `runtime/rtk.py` missing from an image) into a build failure instead
+      of a first-request failure. `compose.yaml` mounts one workspace
+      volume (`${AGENTIC_WORKSPACE:-../agentic-workspace}:/workspace`) on
+      both services instead of three separate bind mounts. Rebuilt and
+      live-smoke-tested against the real containers.
+- [x] **Docs brought in line with the above** (this refactor's own Phase
+      7): `docs/architecture.md` and `docs/adr/0001-layered-package.md`
+      added; `README.md`'s runnable commands, module-path references, and
+      `.env.example` description updated to match; a "where does what
+      live" table added covering the `.env` (code repo, secrets) vs.
+      workspace `config/` (tracked, non-secret) vs. workspace
+      `agent-state/`/`projects/` (gitignored, generated/user state) split.
+- [x] **349/349 Python tests pass** (up from the flat-layout baseline
+      recorded above), plus the 10 Dart tests in `tools/dart_indexer/`.
+      Verified against the real Docker containers, not just the suite.
+
+Full rationale and the options considered: `docs/adr/0001-layered-package.md`.
+The plan this refactor followed: the planning-session output that produced
+it (not tracked in this repo — see the refactor's own commit history on
+`refactor/layered-layout`).
