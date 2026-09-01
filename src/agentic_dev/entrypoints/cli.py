@@ -27,6 +27,7 @@ from ..adapters.telegram.topics import ForumTopicError, create_forum_topic
 from ..adapters.workspace import WorkspaceAlreadyExists, init_workspace
 
 from ..app.approval_flow import apply_approval, default_continuation_message
+from ..app.project_creation import create_project
 from ..domain.approvals import ApprovalError
 from ..domain.roles import AgentsConfig, ModelsConfig
 from ..app.turn_runner import TurnBlocked, TurnRunner
@@ -54,13 +55,11 @@ def _registry() -> ProjectRegistry:
 def cmd_project_new(args: argparse.Namespace) -> int:
     reg = _registry()
     state_path = args.state_path or str(Path(args.host_path).parent / ".agentic-dev" / args.name)
-    entry = reg.register(
-        args.name, host_path=args.host_path, state_path=state_path, platform=args.platform,
-    )
-    store = ProjectStore(entry.state_path)
-    store.ensure_layout()
     workflow = _load_workflow()
-    store.write_state({"workflow_state": workflow.initial, "attempts": 0})
+    entry, store = create_project(
+        reg, name=args.name, host_path=args.host_path, state_path=state_path,
+        workflow=workflow, platform=args.platform,
+    )
     store.append_event({
         "type": "PROJECT_CREATED",
         "project_id": args.name,

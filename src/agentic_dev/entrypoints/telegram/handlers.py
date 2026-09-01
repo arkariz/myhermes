@@ -36,6 +36,7 @@ from telegram.ext import Application, ContextTypes
 from ...adapters.indexing.dart import DartAnalyzerIndexer
 from ...adapters.indexing.remote import RemoteIndexer
 from ...app.approval_flow import apply_approval, default_continuation_message
+from ...app.project_creation import create_project
 from ...domain.approvals import ApprovalError
 from ...domain.roles import AgentsConfig, ModelsConfig
 from ...app.turn_runner import TurnBlocked, TurnRunner
@@ -209,12 +210,11 @@ async def _create_project_from_chat(
 
     host_path = _default_host_root() / name
     state_path = host_path.parent / ".agentic-dev" / name
-    registry.register(name, host_path=str(host_path), state_path=str(state_path))
-
-    store = ProjectStore(str(state_path))
-    store.ensure_layout()
     workflow = WorkflowDefinition.load(config_dir / "workflow.yaml")
-    store.write_state({"workflow_state": workflow.initial, "attempts": 0})
+    _entry, store = create_project(
+        registry, name=name, host_path=str(host_path), state_path=str(state_path),
+        workflow=workflow,
+    )
 
     # Only auto-clear a leading gate (config/workflow.yaml's real `backlog`
     # state, guarding with START_PROJECT) -- not hardcoded to that name, so
