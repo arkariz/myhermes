@@ -11,16 +11,29 @@ them breaking on a file move would have failed silently.
 
 Resolution order, first hit wins:
   1. $AGENTIC_WORKSPACE          -- explicit; what both containers set
-  2. nearest ancestor of CWD holding config/workflow.yaml -- local dev,
-     works from any subdirectory of the repo (src/, tests/, the root)
-  3. raise WorkspaceNotFound, naming what to actually do about it
+  2. `../agentic-workspace`, sibling of the code repo root -- local dev.
+     The code repo root itself is found by searching upward from CWD for
+     tools/dart_indexer/pubspec.yaml (a marker in the CODE, not the
+     workspace); the sibling directory then has to actually hold
+     config/workflow.yaml, or this tier doesn't count as a hit either.
+  3. `workspace` stays `None`
 
-Tier 3 fails LOUDLY on purpose. Given the silent-failure history above,
-guessing a default is worse than stopping with a clear message.
+Resolution itself never raises -- `Settings.from_env()` (and the
+module-level `settings` singleton it produces at import time) must always
+succeed, or nothing importable anywhere in this codebase could even be
+imported before a workspace exists, `agentic init-workspace` included.
+Instead, every workspace-DERIVED property (`config_dir`, `souls_dir`,
+`workflow_file`, ...) raises `WorkspaceNotFound` the moment it's actually
+accessed with no workspace resolved -- still loud, just deferred to first
+real use instead of import time. Given the silent-failure history above,
+guessing a default remains worse than stopping with a clear message; it's
+only the WHEN that moved.
 
-(A later phase of the layered-package refactor, ADR-0001, moves the
-marker to workspace/config/workflow.yaml once config/ becomes its own
-sibling repo -- this module is the only place that change touches.)
+The workspace is a SEPARATE git repo from this one (ADR-0001) -- it tracks
+config/ (roles, budgets, workflow, personas) and ignores agent-state/ and
+projects/ (your actual project repos live there, each with their own
+.git). `agentic init-workspace <path>` bootstraps a fresh one from the
+template shipped inside this package at templates/workspace/config.
 """
 
 from __future__ import annotations
@@ -32,15 +45,19 @@ from typing import Mapping
 
 _WORKSPACE_MARKER = Path("config") / "workflow.yaml"
 _REPO_MARKER = Path("tools") / "dart_indexer" / "pubspec.yaml"
+_SIBLING_WORKSPACE_NAME = "agentic-workspace"
 
 
 class WorkspaceNotFound(Exception):
     """No workspace could be located. Not a bug -- a setup step."""
 
-    def __init__(self, cwd: Path):
+    def __init__(self, cwd: Path | None = None):
+        cwd = cwd or Path.cwd()
         super().__init__(
-            f"No workspace found from {cwd} upward (looked for {_WORKSPACE_MARKER}). "
-            f"Set AGENTIC_WORKSPACE, or run from inside the repo."
+            f"No workspace found from {cwd} (looked for a sibling "
+            f"'{_SIBLING_WORKSPACE_NAME}' directory holding {_WORKSPACE_MARKER}). "
+            f"Set AGENTIC_WORKSPACE, or run `agentic init-workspace "
+            f"../{_SIBLING_WORKSPACE_NAME}` to create one."
         )
 
 
@@ -53,15 +70,17 @@ def _search_up(start: Path, marker: Path) -> Path | None:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    workspace: Path            # holds config/ (and, later, agent-state/, projects/)
+    workspace: Path | None     # holds config/ (and, later, agent-state/, projects/); None until resolved
     dart_indexer_dir: Path     # tools/dart_indexer -- SHIPPED code, different lifetime
     runtime_url: str | None
     telegram_bot_token: str | None
     telegram_forum_chat_id: int | None
-    telegram_default_host_root: Path
+    telegram_default_host_root: Path | None
 
     @property
     def config_dir(self) -> Path:
+        if self.workspace is None:
+            raise WorkspaceNotFound()
         return self.workspace / "config"
 
     @property
@@ -89,16 +108,21 @@ class Settings:
         env = os.environ if env is None else env
         cwd = Path.cwd() if cwd is None else Path(cwd)
 
+        repo = _search_up(cwd.resolve(), _REPO_MARKER)
+
+        ws: Path | None
         if explicit := env.get("AGENTIC_WORKSPACE"):
             ws = Path(explicit).resolve()
         else:
-            found = _search_up(cwd.resolve(), _WORKSPACE_MARKER)
-            if found is None:
-                raise WorkspaceNotFound(cwd)
-            ws = found
+            sibling = (repo.parent / _SIBLING_WORKSPACE_NAME) if repo else None
+            ws = sibling if sibling and (sibling / _WORKSPACE_MARKER).is_file() else None
 
-        repo = _search_up(cwd.resolve(), _REPO_MARKER)
         chat_id = (env.get("TELEGRAM_FORUM_CHAT_ID") or "").strip()
+
+        if explicit_host_root := env.get("TELEGRAM_DEFAULT_HOST_ROOT"):
+            host_root: Path | None = Path(explicit_host_root)
+        else:
+            host_root = (ws / "projects") if ws is not None else None
 
         return cls(
             workspace=ws,
@@ -109,9 +133,7 @@ class Settings:
             runtime_url=env.get("AGENTIC_RUNTIME_URL") or None,
             telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN") or None,
             telegram_forum_chat_id=int(chat_id) if chat_id else None,
-            telegram_default_host_root=Path(
-                env.get("TELEGRAM_DEFAULT_HOST_ROOT") or str(ws / "projects")
-            ),
+            telegram_default_host_root=host_root,
         )
 
 

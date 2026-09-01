@@ -6,7 +6,6 @@ import os
 import pytest
 
 from agentic_dev.domain.roles import AgentsConfig, ModelsConfig, resolve_env_placeholders
-from agentic_dev.settings import settings
 
 
 # ---- resolve_env_placeholders ----------------------------------------
@@ -40,29 +39,29 @@ def test_falls_back_to_default_when_env_var_is_set_but_empty(monkeypatch):
 # ---- AgentsConfig, against the real shipped file -----------------------
 
 
-def test_loads_the_real_agents_yaml():
-    cfg = AgentsConfig.load(settings.agents_file)
+def test_loads_the_real_agents_yaml(template_config_dir):
+    cfg = AgentsConfig.load(template_config_dir / "agents.yaml")
     assert "planner" in cfg.roles
     assert "qa" in cfg.roles
 
 
-def test_qa_denylist_matches_the_pang_derived_rule():
-    cfg = AgentsConfig.load(settings.agents_file)
+def test_qa_denylist_matches_the_pang_derived_rule(template_config_dir):
+    cfg = AgentsConfig.load(template_config_dir / "agents.yaml")
     qa = cfg.get("qa")
     assert "artifacts/tech-plan.md" in qa.denylist
     assert qa.denylist_reason is not None
 
 
-def test_document_roles_are_assembled_and_code_roles_are_guided():
-    cfg = AgentsConfig.load(settings.agents_file)
+def test_document_roles_are_assembled_and_code_roles_are_guided(template_config_dir):
+    cfg = AgentsConfig.load(template_config_dir / "agents.yaml")
     assert cfg.get("planner").context_mode == "assembled"
     assert cfg.get("builder").context_mode == "guided"
     assert cfg.get("builder").read_budget is not None
     assert cfg.get("planner").read_budget is None
 
 
-def test_unknown_role_raises():
-    cfg = AgentsConfig.load(settings.agents_file)
+def test_unknown_role_raises(template_config_dir):
+    cfg = AgentsConfig.load(template_config_dir / "agents.yaml")
     with pytest.raises(KeyError):
         cfg.get("not-a-role")
 
@@ -84,22 +83,22 @@ roles:
 # ---- ModelsConfig, against the real shipped file -----------------------
 
 
-def test_loads_the_real_models_yaml(monkeypatch):
+def test_loads_the_real_models_yaml(monkeypatch, template_config_dir):
     monkeypatch.delenv("PLANNER_MODEL", raising=False)
-    cfg = ModelsConfig.load(settings.models_file, env=os.environ)
+    cfg = ModelsConfig.load(template_config_dir / "models.yaml", env=os.environ)
     route = cfg.get("planner")
     assert route.provider == "openrouter"
     assert route.model  # resolved to the default, not left as a placeholder
     assert "${" not in route.model
 
 
-def test_env_override_flows_through_models_yaml(monkeypatch):
+def test_env_override_flows_through_models_yaml(monkeypatch, template_config_dir):
     monkeypatch.setenv("BUILDER_MODEL", "test/override-model")
-    cfg = ModelsConfig.load(settings.models_file, env=os.environ)
+    cfg = ModelsConfig.load(template_config_dir / "models.yaml", env=os.environ)
     assert cfg.get("builder").model == "test/override-model"
 
 
-def test_unknown_role_raises_for_models_too():
-    cfg = ModelsConfig.load(settings.models_file, env=os.environ)
+def test_unknown_role_raises_for_models_too(template_config_dir):
+    cfg = ModelsConfig.load(template_config_dir / "models.yaml", env=os.environ)
     with pytest.raises(KeyError):
         cfg.get("not-a-role")

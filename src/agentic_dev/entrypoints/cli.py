@@ -1,13 +1,14 @@
-"""CLI driver for the Phase 1 demo -- no Telegram, no Docker orchestration.
+"""CLI driver -- no Telegram, no Docker orchestration.
 
-    python -m agentic_dev.entrypoints.cli project new <id> --host-path P [--platform X]
-    python -m agentic_dev.entrypoints.cli turn <id> "<message>"
-    python -m agentic_dev.entrypoints.cli approve <id> <APPROVAL_TYPE>
-    python -m agentic_dev.entrypoints.cli status <id>
+    agentic init-workspace ../agentic-workspace   # one-time, per machine
+    agentic project new <id> --host-path P [--platform X]
+    agentic turn <id> "<message>"
+    agentic approve <id> <APPROVAL_TYPE>
+    agentic status <id>
 
 This is intentionally the thinnest possible layer over turn_runner.TurnRunner
-and workflow.WorkflowDefinition -- Telegram (Phase 2) will drive the exact
-same TurnRunner, just from a different entry point.
+and workflow.WorkflowDefinition -- Telegram drives the exact same
+TurnRunner, just from a different entry point.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ from pathlib import Path
 from ..adapters.indexing.dart import DartAnalyzerIndexer
 from ..adapters.indexing.remote import RemoteIndexer
 from ..adapters.hermes.runtime import HttpAgentRuntime, InProcessHermesRuntime
-from ..settings import settings
+from ..settings import Settings, WorkspaceNotFound, settings
 from ..adapters.telegram.topics import ForumTopicError, create_forum_topic
+from ..adapters.workspace import WorkspaceAlreadyExists, init_workspace
 
 from ..app.approval_flow import apply_approval, default_continuation_message
 from ..domain.approvals import ApprovalError
@@ -178,6 +180,38 @@ def cmd_approve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init_workspace(args: argparse.Namespace) -> int:
+    if args.check:
+        # A container health-check: does settings resolution succeed at
+        # all, against whatever AGENTIC_WORKSPACE/sibling-repo is already
+        # in place? No path argument, nothing is created.
+        resolved = Settings.from_env()
+        if resolved.workspace is None:
+            print(f"NOT FOUND: {WorkspaceNotFound()}", file=sys.stderr)
+            return 1
+        print(f"workspace: {resolved.workspace}")
+        return 0
+
+    if not args.path:
+        print("a target path is required unless --check is given", file=sys.stderr)
+        return 1
+
+    try:
+        created = init_workspace(Path(args.path))
+    except WorkspaceAlreadyExists as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Workspace ready at {created}")
+    print(f"  config/:      {created / 'config'}")
+    print(f"  agent-state/: {created / 'agent-state'}")
+    print(f"  projects/:    {created / 'projects'}")
+    print("Set AGENTIC_WORKSPACE to this path, or place it as a sibling")
+    print("'../agentic-workspace' of this code repo so settings.py finds it")
+    print("without any env var.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     entry = _registry().get(args.project_id)
     store = ProjectStore(entry.state_path)
@@ -194,8 +228,16 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="orchestrator")
+    parser = argparse.ArgumentParser(prog="agentic")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    init_ws = sub.add_parser("init-workspace")
+    init_ws.add_argument("path", nargs="?", default=None)
+    init_ws.add_argument(
+        "--check", action="store_true",
+        help="verify settings resolution succeeds against the current environment; creates nothing",
+    )
+    init_ws.set_defaults(func=cmd_init_workspace)
 
     project = sub.add_parser("project")
     project_sub = project.add_subparsers(dest="project_command", required=True)

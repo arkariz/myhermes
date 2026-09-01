@@ -8,12 +8,11 @@ from agentic_dev.domain.workflow import (
     WorkflowDefinition,
     WorkflowError,
 )
-from agentic_dev.settings import settings
 
 
 @pytest.fixture(scope="module")
-def wf() -> WorkflowDefinition:
-    return WorkflowDefinition.load(settings.workflow_file)
+def wf(template_config_dir) -> WorkflowDefinition:
+    return WorkflowDefinition.load(template_config_dir / "workflow.yaml")
 
 
 def test_shipped_config_loads_and_validates(wf):

@@ -7,13 +7,13 @@ that omission loud instead of silent.
 """
 
 from agentic_dev.domain.workflow import WorkflowDefinition
-from agentic_dev.settings import settings
 
 
-def test_every_agent_running_workflow_role_has_a_soul_file():
-    workflow = WorkflowDefinition.load(settings.workflow_file)
+def test_every_agent_running_workflow_role_has_a_soul_file(template_config_dir):
+    workflow = WorkflowDefinition.load(template_config_dir / "workflow.yaml")
     roles = {state.role for state in workflow.states.values() if state.runs_agent}
 
-    missing = [role for role in roles if not (settings.souls_dir / f"{role}.md").exists()]
+    souls_dir = template_config_dir / "souls"
+    missing = [role for role in roles if not (souls_dir / f"{role}.md").exists()]
 
     assert missing == []
