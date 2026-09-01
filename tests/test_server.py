@@ -13,9 +13,9 @@ import sys
 
 from fastapi.testclient import TestClient
 
-import runtime.server as server_module
-from runtime.hermes import HermesInvocationError, HermesResult
-from runtime.server import app
+import agentic_dev.entrypoints.http.server as server_module
+from agentic_dev.adapters.hermes.invocation import HermesInvocationError, HermesResult
+from agentic_dev.entrypoints.http.server import app
 
 client = TestClient(app)
 
@@ -226,7 +226,7 @@ def test_index_rejects_a_project_with_no_pubspec(tmp_path):
 def test_index_returns_the_graph_for_a_real_dart_project(monkeypatch, tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: toy\n", encoding="utf-8")
 
-    from indexing.port import IndexEdge, IndexNode, IndexResult
+    from agentic_dev.ports.indexer import IndexEdge, IndexNode, IndexResult
 
     def fake_build(self, project_root, **kwargs):
         assert project_root == tmp_path
@@ -250,7 +250,7 @@ def test_index_returns_the_graph_for_a_real_dart_project(monkeypatch, tmp_path):
 def test_index_maps_a_dart_indexer_failure_to_502(monkeypatch, tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: toy\n", encoding="utf-8")
 
-    from indexing.dart_adapter import DartIndexerError
+    from agentic_dev.adapters.indexing.dart import DartIndexerError
 
     def fake_build(self, project_root, **kwargs):
         raise DartIndexerError("dart_indexer exited 1: boom")

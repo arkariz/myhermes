@@ -3,8 +3,8 @@ ProjectRegistry against a temp projects.yaml."""
 
 import pytest
 
-from orchestrator.registry import ProjectRegistry
-from telegram_bot.routing import RoutingError, link_project, resolve_project
+from agentic_dev.adapters.registry import ProjectRegistry
+from agentic_dev.entrypoints.telegram.routing import RoutingError, link_project, resolve_project
 
 
 @pytest.fixture

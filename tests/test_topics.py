@@ -6,7 +6,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from telegram_bot.topics import ForumTopicError, create_forum_topic
+from agentic_dev.adapters.telegram.topics import ForumTopicError, create_forum_topic
 
 
 def _client_with(handler):

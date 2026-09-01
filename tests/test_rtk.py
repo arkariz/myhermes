@@ -1,6 +1,6 @@
 import sys
 
-from runtime.rtk import compress, run
+from agentic_dev.adapters.exec.rtk import compress, run
 
 
 def test_ratio_is_zero_for_empty_text():

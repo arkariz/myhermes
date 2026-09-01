@@ -3,8 +3,8 @@ real shipped files and synthetic edge cases."""
 
 import pytest
 
-from orchestrator.config import AgentsConfig, ModelsConfig, resolve_env_placeholders
-from settings import settings
+from agentic_dev.domain.roles import AgentsConfig, ModelsConfig, resolve_env_placeholders
+from agentic_dev.settings import settings
 
 
 # ---- resolve_env_placeholders ----------------------------------------

@@ -12,8 +12,8 @@ import subprocess
 
 import pytest
 
-from indexing.dart_adapter import DartAnalyzerIndexer, DartIndexerError
-from indexing.port import IndexEdge, IndexNode
+from agentic_dev.adapters.indexing.dart import DartAnalyzerIndexer, DartIndexerError
+from agentic_dev.ports.indexer import IndexEdge, IndexNode
 
 
 def _completed(stdout="", stderr="", returncode=0):

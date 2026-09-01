@@ -5,10 +5,10 @@ callback (must reject a stale artifact_revision)."""
 
 import pytest
 
-from orchestrator.approval_flow import apply_approval
-from orchestrator.approvals import ApprovalError
-from orchestrator.state_machine import WorkflowDefinition
-from orchestrator.store import ProjectStore
+from agentic_dev.app.approval_flow import apply_approval
+from agentic_dev.domain.approvals import ApprovalError
+from agentic_dev.domain.workflow import WorkflowDefinition
+from agentic_dev.adapters.storage.store import ProjectStore
 
 WORKFLOW_YAML = """
 initial: planning

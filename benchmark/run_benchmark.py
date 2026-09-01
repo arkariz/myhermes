@@ -35,32 +35,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Bootstrapping sys.path so `python benchmark/run_benchmark.py` (a direct
-# script invocation, not `-m`) can find the orchestrator/runtime/settings
-# top-level modules -- this is the one legitimate use of Path(__file__)
-# in this codebase: it locates the CODE (where to import from), never the
+# script invocation, not `-m`) can find the agentic_dev package under
+# src/ -- this is the one legitimate use of Path(__file__) in this
+# codebase: it locates the CODE (where to import from), never the
 # CONFIG (where workflow.yaml/agents.yaml live, which is settings.py's
 # job below). `python -m benchmark.run_benchmark` from the repo root
 # doesn't need this at all (the interpreter already puts cwd on
 # sys.path), but the insert is harmless and keeps the script runnable
 # either way.
-_CODE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_CODE_ROOT = _REPO_ROOT / "src"
 sys.path.insert(0, str(_CODE_ROOT))
 
-from orchestrator.approvals import PendingAction, resolve_command  # noqa: E402
-from orchestrator.config import AgentsConfig, ModelsConfig  # noqa: E402
-from orchestrator.context.builder import BuildRequest, ContextBuilder  # noqa: E402
-from orchestrator.context.denylist import ContextPolicy, DenylistViolation  # noqa: E402
-from orchestrator.context.providers import ArtifactSectionProvider  # noqa: E402
-from orchestrator.context.tokens import TokenEstimator  # noqa: E402
-from orchestrator.jobs import TurnRunner  # noqa: E402
-from orchestrator.state_machine import WorkflowDefinition  # noqa: E402
-from orchestrator.store import ProjectStore  # noqa: E402
-import runtime.agent_runtime as agent_runtime_module  # noqa: E402
-from runtime.agent_runtime import HermesResult, InProcessHermesRuntime  # noqa: E402
+from agentic_dev.domain.approvals import PendingAction, resolve_command  # noqa: E402
+from agentic_dev.domain.roles import AgentsConfig, ModelsConfig  # noqa: E402
+from agentic_dev.domain.context.builder import BuildRequest, ContextBuilder  # noqa: E402
+from agentic_dev.domain.context.denylist import ContextPolicy, DenylistViolation  # noqa: E402
+from agentic_dev.adapters.context.providers import ArtifactSectionProvider  # noqa: E402
+from agentic_dev.domain.context.tokens import TokenEstimator  # noqa: E402
+from agentic_dev.app.turn_runner import TurnRunner  # noqa: E402
+from agentic_dev.domain.workflow import WorkflowDefinition  # noqa: E402
+from agentic_dev.adapters.storage.store import ProjectStore  # noqa: E402
+import agentic_dev.ports.agent_runtime as agent_runtime_module  # noqa: E402
+from agentic_dev.ports.agent_runtime import HermesResult, InProcessHermesRuntime  # noqa: E402
 
 from benchmark.naive_baseline import run_naive  # noqa: E402
 from benchmark.scenario import SCENARIO, Approval, Turn  # noqa: E402
-from settings import settings  # noqa: E402
+from agentic_dev.settings import settings  # noqa: E402
 
 CONFIG_DIR = settings.config_dir
 SOULS_DIR = settings.souls_dir
@@ -259,7 +260,7 @@ def main() -> int:
         denylist_demo = demonstrate_denylist_gap(state_root)
 
     report = render_report(ours, naive, denylist_demo)
-    out_path = _CODE_ROOT / "benchmark" / "report.md"
+    out_path = _REPO_ROOT / "benchmark" / "report.md"
     out_path.write_text(report, encoding="utf-8")
     print(report)
     print(f"\nWritten to {out_path}")

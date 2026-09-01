@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.hermes import (
+from agentic_dev.adapters.hermes.invocation import (
     HermesInvocationError,
     HermesRequest,
     build_argv,

@@ -7,7 +7,7 @@ events, sequence numbers survive a crash).
 
 import json
 
-from orchestrator.store import ProjectStore
+from agentic_dev.adapters.storage.store import ProjectStore
 
 
 def test_write_state_then_read_round_trips(tmp_path):

@@ -2,7 +2,7 @@
 
 import pytest
 
-from orchestrator.registry import ProjectAlreadyExists, ProjectNotFound, ProjectRegistry
+from agentic_dev.adapters.registry import ProjectAlreadyExists, ProjectNotFound, ProjectRegistry
 
 
 def test_register_then_get_round_trips(tmp_path):

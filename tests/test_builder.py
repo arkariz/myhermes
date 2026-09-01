@@ -7,10 +7,10 @@ silently dropped.
 
 import pytest
 
-from orchestrator.context.budget import ContextItem, ReadBudget
-from orchestrator.context.builder import BuildRequest, ContextBuilder
-from orchestrator.context.denylist import ContextPolicy, DenylistViolation
-from orchestrator.context.tokens import TokenEstimator
+from agentic_dev.domain.context.budget import ContextItem, ReadBudget
+from agentic_dev.domain.context.builder import BuildRequest, ContextBuilder
+from agentic_dev.domain.context.denylist import ContextPolicy, DenylistViolation
+from agentic_dev.domain.context.tokens import TokenEstimator
 
 
 class FixedProvider:

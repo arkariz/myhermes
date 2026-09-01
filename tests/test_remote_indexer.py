@@ -9,8 +9,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from indexing.dart_adapter import DartIndexerError
-from indexing.remote import RemoteIndexer
+from agentic_dev.adapters.indexing.dart import DartIndexerError
+from agentic_dev.adapters.indexing.remote import RemoteIndexer
 
 
 class _FakeResponse:

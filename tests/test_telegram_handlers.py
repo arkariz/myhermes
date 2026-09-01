@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import runtime.agent_runtime as agent_runtime_module
-from orchestrator.config import AgentsConfig, ModelsConfig
-from orchestrator.registry import ProjectRegistry
-from orchestrator.state_machine import WorkflowDefinition
-from orchestrator.store import ProjectStore
-from runtime.agent_runtime import HermesResult
-from telegram_bot import handlers
+import agentic_dev.ports.agent_runtime as agent_runtime_module
+from agentic_dev.domain.roles import AgentsConfig, ModelsConfig
+from agentic_dev.adapters.registry import ProjectRegistry
+from agentic_dev.domain.workflow import WorkflowDefinition
+from agentic_dev.adapters.storage.store import ProjectStore
+from agentic_dev.ports.agent_runtime import HermesResult
+from agentic_dev.entrypoints.telegram import handlers
 
 AGENTS_YAML = """
 defaults: {toolsets: [skills], context_mode: assembled}
@@ -579,7 +579,7 @@ async def test_create_with_existing_name_is_rejected(bot_data, tmp_path):
 
 @pytest.mark.asyncio
 async def test_create_survives_a_forum_topic_failure(bot_data, tmp_path, monkeypatch):
-    from telegram_bot.topics import ForumTopicError
+    from agentic_dev.adapters.telegram.topics import ForumTopicError
 
     monkeypatch.setattr(
         handlers, "settings",

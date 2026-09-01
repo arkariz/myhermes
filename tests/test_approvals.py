@@ -5,7 +5,7 @@ project forward on their own."""
 
 import pytest
 
-from orchestrator.approvals import (
+from agentic_dev.domain.approvals import (
     ApprovalError,
     PendingAction,
     parse_decision_blocks,

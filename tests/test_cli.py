@@ -7,10 +7,10 @@ from dataclasses import replace
 
 import pytest
 
-import orchestrator.cli as cli_module
-import runtime.agent_runtime as agent_runtime_module
-from runtime.agent_runtime import HermesResult
-from settings import Settings
+import agentic_dev.entrypoints.cli as cli_module
+import agentic_dev.ports.agent_runtime as agent_runtime_module
+from agentic_dev.ports.agent_runtime import HermesResult
+from agentic_dev.settings import Settings
 
 
 WORKFLOW_YAML = """
@@ -96,7 +96,7 @@ def test_project_new_creates_registry_entry_and_state(cli_env, capsys):
 
 def test_project_new_twice_raises(cli_env):
     cli_module.main(["project", "new", "toy", "--host-path", "p"])
-    from orchestrator.registry import ProjectAlreadyExists
+    from agentic_dev.adapters.registry import ProjectAlreadyExists
     with pytest.raises(ProjectAlreadyExists):
         cli_module.main(["project", "new", "toy", "--host-path", "p"])
 
@@ -148,7 +148,7 @@ def test_approve_clears_the_session_forcing_a_rebuild_next_state(cli_env, monkey
     cli_module.main(["turn", "toy", "Build a habit tracker."])
 
     entry = cli_module._registry().get("toy")
-    from orchestrator.store import ProjectStore
+    from agentic_dev.adapters.storage.store import ProjectStore
     store = ProjectStore(entry.state_path)
     assert store.read_state()["session"]["hermes_session_id"] == "sess-1"
 
@@ -253,7 +253,7 @@ def test_project_new_with_telegram_env_creates_and_links_topic(cli_env, monkeypa
 
 
 def test_project_new_reports_but_survives_a_telegram_failure(cli_env, monkeypatch, capsys):
-    from telegram_bot.topics import ForumTopicError
+    from agentic_dev.adapters.telegram.topics import ForumTopicError
 
     monkeypatch.setattr(cli_module, "settings", replace(
         cli_module.settings, telegram_bot_token="fake-token", telegram_forum_chat_id=555,

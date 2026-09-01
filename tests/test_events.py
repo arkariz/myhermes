@@ -1,8 +1,8 @@
 """Event log: every CONTEXT_BUILT records both inclusions and omissions with
 reasons, and token drift is computed honestly against the real usage report."""
 
-from orchestrator.events import EventLog, EventType
-from orchestrator.store import ProjectStore
+from agentic_dev.adapters.storage.events import EventLog, EventType
+from agentic_dev.adapters.storage.store import ProjectStore
 
 
 def test_context_built_records_selection_and_omission_reasons(tmp_path):

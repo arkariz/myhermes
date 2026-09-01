@@ -6,8 +6,8 @@ from disk and shapes it into a correct ContextItem, and that a missing
 source is handled by returning nothing rather than crashing the turn.
 """
 
-from orchestrator.context.builder import BuildRequest
-from orchestrator.context.providers import (
+from agentic_dev.domain.context.builder import BuildRequest
+from agentic_dev.adapters.context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
     DiffProvider,
@@ -18,7 +18,7 @@ from orchestrator.context.providers import (
     RoleSoulProvider,
     SummaryProvider,
 )
-from orchestrator.store import ProjectStore
+from agentic_dev.adapters.storage.store import ProjectStore
 
 
 def make_request(**overrides):
@@ -189,8 +189,8 @@ def test_index_provider_returns_nothing_before_any_index_exists(tmp_path):
 
 
 def test_index_provider_lists_files_from_a_saved_graph(tmp_path):
-    from indexing.freshness import save_graph
-    from indexing.port import IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import save_graph
+    from agentic_dev.ports.indexer import IndexNode, IndexResult
 
     store = ProjectStore(tmp_path)
     save_graph(store.index_dir(), IndexResult(
@@ -209,8 +209,8 @@ def test_index_provider_lists_files_from_a_saved_graph(tmp_path):
 
 
 def test_index_provider_deduplicates_against_explicit_references(tmp_path):
-    from indexing.freshness import save_graph
-    from indexing.port import IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import save_graph
+    from agentic_dev.ports.indexer import IndexNode, IndexResult
 
     store = ProjectStore(tmp_path)
     save_graph(store.index_dir(), IndexResult(
@@ -224,8 +224,8 @@ def test_index_provider_deduplicates_against_explicit_references(tmp_path):
 
 
 def test_index_provider_expands_a_referenced_files_relative_import(tmp_path):
-    from indexing.freshness import save_graph
-    from indexing.port import IndexEdge, IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import save_graph
+    from agentic_dev.ports.indexer import IndexEdge, IndexNode, IndexResult
 
     store = ProjectStore(tmp_path)
     save_graph(store.index_dir(), IndexResult(
@@ -251,8 +251,8 @@ def test_index_provider_expands_a_referenced_files_relative_import(tmp_path):
 
 
 def test_index_provider_resolves_a_self_package_import_via_pubspec(tmp_path):
-    from indexing.freshness import save_graph
-    from indexing.port import IndexEdge, IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import save_graph
+    from agentic_dev.ports.indexer import IndexEdge, IndexNode, IndexResult
 
     (tmp_path / "pubspec.yaml").write_text("name: toy_app\nversion: 1.0.0\n", encoding="utf-8")
 
@@ -275,8 +275,8 @@ def test_index_provider_resolves_a_self_package_import_via_pubspec(tmp_path):
 
 
 def test_index_provider_ranks_files_matching_a_task_keyword_above_the_rest(tmp_path):
-    from indexing.freshness import save_graph
-    from indexing.port import IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import save_graph
+    from agentic_dev.ports.indexer import IndexNode, IndexResult
 
     store = ProjectStore(tmp_path)
     save_graph(store.index_dir(), IndexResult(
@@ -367,7 +367,7 @@ def test_diff_provider_returns_nothing_when_there_are_no_changes_since_the_base(
     _commit(project, "a.dart", "class A {}", "first")
 
     store = ProjectStore(tmp_path / "state")
-    from orchestrator.project_git import current_revision
+    from agentic_dev.adapters.git.project import current_revision
     store.update_state(implementation_base_revision=current_revision(project))
 
     assert DiffProvider(store, project).collect(make_request()) == []

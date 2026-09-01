@@ -2,7 +2,7 @@
 
 import pytest
 
-from orchestrator.context.denylist import ContextPolicy, DenylistViolation
+from agentic_dev.domain.context.denylist import ContextPolicy, DenylistViolation
 
 
 def test_qa_cannot_receive_tech_plan():

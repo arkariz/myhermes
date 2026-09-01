@@ -7,7 +7,7 @@ locally that this costs nothing meaningful in test runtime.
 
 from __future__ import annotations
 
-from orchestrator.artifact_versioning import commit, diff, ensure_repo, log
+from agentic_dev.adapters.git.artifacts import commit, diff, ensure_repo, log
 
 
 def test_ensure_repo_creates_a_git_repo(tmp_path):

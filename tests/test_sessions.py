@@ -11,13 +11,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from orchestrator.sessions import (
+from agentic_dev.domain.sessions import (
     BoundaryReason,
     Session,
     SessionManager,
     SessionPolicy,
 )
-from orchestrator.state_machine import State, StateKind
+from agentic_dev.domain.workflow import State, StateKind
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from orchestrator.project_git import ProjectGitError, commit_all, current_revision, diff, is_git_repo
+from agentic_dev.adapters.git.project import ProjectGitError, commit_all, current_revision, diff, is_git_repo
 
 
 def _git(args, cwd):

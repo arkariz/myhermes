@@ -3,12 +3,12 @@ an LLM to move a project, no unbounded retry."""
 
 import pytest
 
-from orchestrator.state_machine import (
+from agentic_dev.domain.workflow import (
     StateKind,
     WorkflowDefinition,
     WorkflowError,
 )
-from settings import settings
+from agentic_dev.settings import settings
 
 
 @pytest.fixture(scope="module")

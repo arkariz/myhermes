@@ -12,12 +12,12 @@ exhausting attempts block the project.
 
 import pytest
 
-import runtime.agent_runtime as agent_runtime_module
-from orchestrator.config import AgentsConfig, ModelsConfig
-from orchestrator.jobs import TurnBlocked, TurnRunner
-from orchestrator.state_machine import WorkflowDefinition
-from orchestrator.store import ProjectStore
-from runtime.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
+import agentic_dev.ports.agent_runtime as agent_runtime_module
+from agentic_dev.domain.roles import AgentsConfig, ModelsConfig
+from agentic_dev.app.turn_runner import TurnBlocked, TurnRunner
+from agentic_dev.domain.workflow import WorkflowDefinition
+from agentic_dev.adapters.storage.store import ProjectStore
+from agentic_dev.ports.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
 
 
 WORKFLOW_YAML = """
@@ -415,7 +415,7 @@ def test_runtime_url_set_calls_the_http_client_instead(monkeypatch, runner):
 
 
 def test_runtime_client_error_becomes_a_runtime_error(monkeypatch, runner):
-    from runtime.client import RuntimeClientError
+    from agentic_dev.adapters.hermes.http_client import RuntimeClientError
 
     runner.agent_runtime = HttpAgentRuntime(base_url="http://agent-runtime:8000")
 
@@ -503,7 +503,7 @@ def test_a_written_artifact_gets_committed(monkeypatch, runner):
     monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_the_artifact)
     runner.run_turn("Build a habit tracker.")
 
-    from orchestrator.artifact_versioning import log
+    from agentic_dev.adapters.git.artifacts import log
     entries = log(runner.store.artifacts_dir())
     assert len(entries) == 1
     assert "planning" in entries[0]["message"]
@@ -513,7 +513,7 @@ def test_a_turn_with_no_artifact_change_commits_nothing(monkeypatch, runner):
     monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success(response="Just a question."))
     runner.run_turn("Build a habit tracker.")
 
-    from orchestrator.artifact_versioning import log
+    from agentic_dev.adapters.git.artifacts import log
     assert log(runner.store.artifacts_dir()) == []
 
 
@@ -528,7 +528,7 @@ def test_a_failed_turn_does_not_commit(monkeypatch, runner):
     monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_run_that_writes_then_fails)
     runner.run_turn("Build a habit tracker.")
 
-    from orchestrator.artifact_versioning import log
+    from agentic_dev.adapters.git.artifacts import log
     assert log(runner.store.artifacts_dir()) == []
 
 
@@ -542,7 +542,7 @@ class FakeIndexer:
         return True
 
     def build(self, project_root):
-        from indexing.port import IndexResult
+        from agentic_dev.ports.indexer import IndexResult
         return IndexResult(nodes=(), edges=())
 
 
@@ -577,7 +577,7 @@ def test_guided_role_with_an_indexer_gets_a_real_index_revision(monkeypatch, run
 
     runner.run_turn("build it")
 
-    from indexing.freshness import current_git_revision
+    from agentic_dev.adapters.indexing.freshness import current_git_revision
     assert runner.store.read_state()["index_revision"] == current_git_revision(project)
 
 
@@ -599,8 +599,8 @@ def test_assembled_role_never_gets_an_index_revision_even_with_an_indexer(monkey
 def test_index_provider_items_appear_in_the_manifest_for_a_guided_turn(monkeypatch, runner, tmp_path):
     from datetime import datetime, timezone
 
-    from indexing.freshness import IndexMetadata, current_git_revision, save_graph, save_metadata
-    from indexing.port import IndexNode, IndexResult
+    from agentic_dev.adapters.indexing.freshness import IndexMetadata, current_git_revision, save_graph, save_metadata
+    from agentic_dev.ports.indexer import IndexNode, IndexResult
 
     project = tmp_path / "source"
     project.mkdir()
@@ -702,7 +702,7 @@ def review_runner(tmp_path):
 
 
 def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch, review_runner):
-    from orchestrator.project_git import current_revision
+    from agentic_dev.adapters.git.project import current_revision
 
     monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
 
@@ -714,7 +714,7 @@ def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch
 
 
 def test_builder_turn_commits_project_source_changes(monkeypatch, review_runner):
-    from orchestrator.project_git import current_revision
+    from agentic_dev.adapters.git.project import current_revision
 
     base_revision = current_revision(review_runner.project_source_root)
 
@@ -736,7 +736,7 @@ def test_builder_turn_commits_project_source_changes(monkeypatch, review_runner)
 
 
 def test_builder_turn_with_no_source_changes_commits_nothing(monkeypatch, review_runner):
-    from orchestrator.project_git import current_revision
+    from agentic_dev.adapters.git.project import current_revision
 
     base_revision = current_revision(review_runner.project_source_root)
     monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
@@ -747,7 +747,7 @@ def test_builder_turn_with_no_source_changes_commits_nothing(monkeypatch, review
 
 
 def test_base_revision_is_stable_across_a_second_implementation_attempt(monkeypatch, review_runner):
-    from orchestrator.project_git import current_revision
+    from agentic_dev.adapters.git.project import current_revision
 
     def fake_run_that_writes_a_file(request, usage_file=None):
         (review_runner.project_source_root / "attempt.dart").write_text("class A {}", encoding="utf-8")

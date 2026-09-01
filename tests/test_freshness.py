@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import subprocess
 
-from indexing.freshness import current_git_revision, ensure_fresh, load_metadata
-from indexing.port import IndexEdge, IndexNode, IndexResult
+from agentic_dev.adapters.indexing.freshness import current_git_revision, ensure_fresh, load_metadata
+from agentic_dev.ports.indexer import IndexEdge, IndexNode, IndexResult
 
 
 class FakeIndexer:

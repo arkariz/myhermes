@@ -6,8 +6,8 @@ config/workflow.yaml well before their souls existed). This test makes
 that omission loud instead of silent.
 """
 
-from orchestrator.state_machine import WorkflowDefinition
-from settings import settings
+from agentic_dev.domain.workflow import WorkflowDefinition
+from agentic_dev.settings import settings
 
 
 def test_every_agent_running_workflow_role_has_a_soul_file():

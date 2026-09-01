@@ -7,8 +7,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from runtime.client import RuntimeClientError, run
-from runtime.hermes import HermesRequest
+from agentic_dev.adapters.hermes.http_client import RuntimeClientError, run
+from agentic_dev.adapters.hermes.invocation import HermesRequest
 
 
 def _client_with(handler):

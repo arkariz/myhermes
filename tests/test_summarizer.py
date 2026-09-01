@@ -6,11 +6,11 @@ in this codebase.
 
 from __future__ import annotations
 
-import runtime.agent_runtime as agent_runtime_module
-from orchestrator.config import ModelRoute
-from orchestrator.store import ProjectStore
-from orchestrator.summarizer import build_prompt, summarize, update_summary
-from runtime.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
+import agentic_dev.ports.agent_runtime as agent_runtime_module
+from agentic_dev.domain.roles import ModelRoute
+from agentic_dev.adapters.storage.store import ProjectStore
+from agentic_dev.app.summarizer import build_prompt, summarize, update_summary
+from agentic_dev.ports.agent_runtime import HermesResult, HttpAgentRuntime, InProcessHermesRuntime
 
 
 def test_build_prompt_includes_previous_summary_and_new_turn():
@@ -176,7 +176,7 @@ def test_summarize_with_an_http_runtime_calls_the_http_client_instead(monkeypatc
 
 
 def test_summarize_treats_a_runtime_client_error_as_a_best_effort_failure(monkeypatch, tmp_path):
-    from runtime.client import RuntimeClientError
+    from agentic_dev.adapters.hermes.http_client import RuntimeClientError
 
     def raise_client_error(request, usage_file=None, base_url=None):
         raise RuntimeClientError("could not reach runtime server")

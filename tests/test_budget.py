@@ -2,7 +2,7 @@
 independent axes -- this file proves neither one silently governs the other,
 and that a full rebuild is byte-identical given identical inputs."""
 
-from orchestrator.context.budget import (
+from agentic_dev.domain.context.budget import (
     ContextItem,
     dedupe,
     order_for_render,
