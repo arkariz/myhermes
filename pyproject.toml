@@ -2,20 +2,40 @@
 name = "agentic-dev"
 version = "0.1.0"
 description = "Local-first, Dockerized agentic engineering workspace (Pang redesign)."
-requires-python = ">=3.12"
-dependencies = [
-    "pyyaml>=6.0",
-    "tiktoken>=0.7",
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-    "httpx>=0.27",
-    "python-telegram-bot>=21.0",
-]
+# >=3.11, not >=3.12: agent-runtime's base image (debian:bookworm-slim)
+# ships system Python 3.11.2, and nothing in this codebase needs a
+# 3.12-only feature. Found live: an unmet >=3.12 requirement doesn't fail
+# fast -- pip's resolver instead backtracks through every release of every
+# dependency for 10+ minutes, hoping SOME older version relaxes the
+# python_requires metadata, before finally reporting the real error.
+requires-python = ">=3.11"
+
+# Pinned exact, not `>=` -- keeps `pip install` inside each Docker build
+# fast and reproducible rather than re-resolving the whole graph on every
+# build. These are the exact versions already verified working together in
+# this repo's own .venv.
+dependencies = ["httpx==0.28.1"]
 
 [project.optional-dependencies]
+# The orchestrator image never touches Hermes or FastAPI directly (every
+# invocation crosses AGENTIC_RUNTIME_URL); agent-runtime never parses YAML
+# workflow config. Splitting these two out is what makes each Dockerfile's
+# `pip install ".[x]"` install only what that container actually runs,
+# instead of the shared, hand-duplicated dependency list this replaced.
+orchestrator = [
+    "pyyaml==6.0.3",
+    "tiktoken==0.14.0",
+    "python-telegram-bot==22.8",
+]
+runtime = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "pydantic==2.13.4",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "agentic-dev[orchestrator,runtime]",
 ]
 
 [project.scripts]
