@@ -7,6 +7,9 @@
 # var live in .env.example.
 
 routing:
+  auditor:
+    provider: openrouter
+    model: ${AUDITOR_MODEL:-anthropic/claude-sonnet-4.6}
   planner:
     provider: openrouter
     model: ${PLANNER_MODEL:-anthropic/claude-sonnet-4.6}

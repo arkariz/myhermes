@@ -714,6 +714,44 @@ def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch
     )
 
 
+def test_landing_directly_in_qa_still_captures_a_base_revision(monkeypatch, tmp_path):
+    # An imported project's onboarding audit can route straight to review
+    # or qa, never passing through implementation first (State.
+    # next_by_approval) -- DiffProvider must still get a real base
+    # revision to diff from, not stay permanently empty.
+    from agentic_dev.adapters.git.project import current_revision
+
+    (tmp_path / "workflow.yaml").write_text("""
+initial: qa
+states:
+  qa: {kind: autonomous, role: reviewer, max_attempts: 2, on_failure: blocked, next: done}
+  done: {kind: terminal}
+  blocked: {kind: terminal, recoverable: true}
+""")
+    (tmp_path / "agents.yaml").write_text(REVIEW_AGENTS_YAML)
+    (tmp_path / "models.yaml").write_text(REVIEW_MODELS_YAML)
+    (tmp_path / "souls").mkdir()
+
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+
+    runner = TurnRunner(
+        project_id="toy", store=ProjectStore(tmp_path / "agent-state"),
+        workflow=WorkflowDefinition.load(tmp_path / "workflow.yaml"),
+        agents=AgentsConfig.load(tmp_path / "agents.yaml"),
+        models=ModelsConfig.load(tmp_path / "models.yaml", env={}),
+        souls_dir=str(tmp_path / "souls"), project_source_root=project,
+    )
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
+
+    runner.run_turn("check it")
+
+    assert runner.store.read_state()["implementation_base_revision"] == (
+        current_revision(project)
+    )
+
+
 def test_builder_turn_commits_project_source_changes(monkeypatch, review_runner):
     from agentic_dev.adapters.git.project import current_revision
 

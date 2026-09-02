@@ -216,6 +216,113 @@ def test_approve_does_not_auto_continue_into_a_terminal_state(cli_env, monkeypat
     assert calls == []  # "done" is terminal -- no auto-triggered turn
 
 
+# ---- --import: routing an existing project to onboarding -------------------
+
+IMPORT_WORKFLOW_YAML = """
+initial: backlog
+states:
+  backlog:
+    kind: gate
+    next_by_approval:
+      START_PROJECT: planning
+      IMPORT_PROJECT: onboarding
+  onboarding:
+    kind: collaborative
+    role: auditor
+    artifact: onboarding-report.md
+    completion: approval
+    next_by_approval:
+      TO_IMPLEMENTATION: done
+  planning:
+    kind: collaborative
+    role: planner
+    artifact: prd.md
+    completion: approval
+    approval_type: APPROVE_PRD
+    next: done
+  done:
+    kind: terminal
+"""
+
+IMPORT_AGENTS_YAML = """
+defaults: {toolsets: [skills], context_mode: assembled}
+roles:
+  planner:
+    context_mode: assembled
+    toolsets: [skills]
+    budget: {max_input_tokens: 12000, max_output_tokens: 4000}
+  auditor:
+    context_mode: guided
+    toolsets: [skills, terminal, file]
+    budget: {max_input_tokens: 24000, max_output_tokens: 6000}
+"""
+
+IMPORT_MODELS_YAML = """
+routing:
+  planner: {provider: openrouter, model: openai/gpt-4o-mini}
+  auditor: {provider: openrouter, model: openai/gpt-4o-mini}
+"""
+
+
+def test_project_new_without_import_starts_at_backlog(cli_env, capsys):
+    (cli_env / "config" / "workflow.yaml").write_text(IMPORT_WORKFLOW_YAML)
+    (cli_env / "config" / "agents.yaml").write_text(IMPORT_AGENTS_YAML)
+    (cli_env / "config" / "models.yaml").write_text(IMPORT_MODELS_YAML)
+
+    cli_module.main(["project", "new", "toy", "--host-path", "p"])
+    rc = cli_module.main(["status", "toy"])
+
+    assert rc == 0
+    assert "workflow_state: backlog" in capsys.readouterr().out
+
+
+def test_project_new_with_import_routes_to_onboarding_and_runs_the_auditor(
+    cli_env, monkeypatch, capsys,
+):
+    (cli_env / "config" / "workflow.yaml").write_text(IMPORT_WORKFLOW_YAML)
+    (cli_env / "config" / "agents.yaml").write_text(IMPORT_AGENTS_YAML)
+    (cli_env / "config" / "models.yaml").write_text(IMPORT_MODELS_YAML)
+    monkeypatch.setattr(
+        agent_runtime_module, "hermes_run",
+        fake_success(response="Found an existing Flutter project, mostly built."),
+    )
+
+    rc = cli_module.main([
+        "project", "new", "toy", "--host-path", str(cli_env / "host" / "toy"), "--import",
+    ])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Approved. 'backlog' -> 'onboarding'" in out
+    assert "Found an existing Flutter project, mostly built." in out
+
+    status_rc = cli_module.main(["status", "toy"])
+    assert status_rc == 0
+    assert "workflow_state: onboarding" in capsys.readouterr().out
+
+
+def test_import_flag_fires_a_real_typed_approval_event(cli_env, monkeypatch):
+    # --import must go through the same typed-approval machinery a human
+    # clicking/typing IMPORT_PROJECT would -- not a raw state.yaml write --
+    # so it's auditable in events.jsonl the same way.
+    (cli_env / "config" / "workflow.yaml").write_text(IMPORT_WORKFLOW_YAML)
+    (cli_env / "config" / "agents.yaml").write_text(IMPORT_AGENTS_YAML)
+    (cli_env / "config" / "models.yaml").write_text(IMPORT_MODELS_YAML)
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
+
+    cli_module.main([
+        "project", "new", "toy", "--host-path", str(cli_env / "host" / "toy"), "--import",
+    ])
+
+    entry = cli_module._registry().get("toy")
+    from agentic_dev.adapters.storage.store import ProjectStore
+    events = ProjectStore(entry.state_path).read_events()
+    approval_events = [e for e in events if e["type"] == "APPROVAL_GRANTED"]
+    assert len(approval_events) == 1
+    assert approval_events[0]["payload"]["approval_type"] == "IMPORT_PROJECT"
+    assert approval_events[0]["payload"]["next_state"] == "onboarding"
+
+
 # ---- Telegram forum-topic auto-creation on `project new` -------------------
 
 

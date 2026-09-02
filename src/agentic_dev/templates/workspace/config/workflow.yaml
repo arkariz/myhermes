@@ -11,10 +11,36 @@
 initial: backlog
 
 states:
+  # Two ways in: `/approve START_PROJECT` for a brand-new project (the
+  # normal path, below), or `/approve IMPORT_PROJECT` for a project that
+  # already exists -- human-made, AI-assisted, documented or not --
+  # routing to `onboarding` instead. Still exactly one typed human
+  # decision either way; see next_by_approval below and onboarding's own.
   backlog:
     kind: gate
-    approval_type: START_PROJECT
-    next: discovery
+    next_by_approval:
+      START_PROJECT: discovery
+      IMPORT_PROJECT: onboarding
+
+  # An existing codebase, audited rather than assumed. The auditor role
+  # explores with its own tools (guided context_mode) and recommends ONE
+  # of several possible resume points as a `decision` block -- never
+  # decides it outright, same as every other state: a human still has to
+  # type the matching /approve.
+  onboarding:
+    kind: collaborative
+    role: auditor
+    artifact: onboarding-report.md
+    completion: approval
+    next_by_approval:
+      TO_DISCOVERY: discovery
+      TO_PLANNING: planning
+      TO_PRODUCT_DESIGN: product-design
+      TO_ARCHITECTURE: architecture
+      TO_AWAITING_APPROVAL: awaiting-approval
+      TO_IMPLEMENTATION: implementation
+      TO_REVIEW: review
+      TO_QA: qa
 
   discovery:
     kind: collaborative

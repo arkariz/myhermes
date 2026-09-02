@@ -42,6 +42,15 @@ class State:
     on_reject: str | None = None
     max_attempts: int = 1
     recoverable: bool = False
+    # A state with several possible destinations, picked by WHICH typed
+    # approval a human gives -- not by anything an agent decides. `next`
+    # (singular) stays what every other state uses; this is the escape
+    # hatch for the one shape that genuinely can't be one fixed edge (an
+    # onboarding/audit state whose outcome depends on what's actually
+    # found in an imported project). Mutually exclusive with `next` in
+    # practice, though nothing enforces that -- `advance()` just checks
+    # this first.
+    next_by_approval: dict[str, str] | None = None
 
     @property
     def runs_agent(self) -> bool:
@@ -85,6 +94,7 @@ class WorkflowDefinition:
                 raise WorkflowError(
                     f"state {name!r}: unknown kind {spec.get('kind')!r}"
                 ) from None
+            next_by_approval = spec.get("next_by_approval")
             states[name] = State(
                 name=name,
                 kind=kind,
@@ -97,6 +107,7 @@ class WorkflowDefinition:
                 on_reject=spec.get("on_reject"),
                 max_attempts=int(spec.get("max_attempts", 1)),
                 recoverable=bool(spec.get("recoverable", False)),
+                next_by_approval=dict(next_by_approval) if next_by_approval else None,
             )
         return cls(initial, states)
 
@@ -113,22 +124,34 @@ class WorkflowDefinition:
                     raise WorkflowError(
                         f"state {state.name!r}.{attr} -> {target!r} is not defined"
                     )
+            for approval_type, target in (state.next_by_approval or {}).items():
+                if target not in self.states:
+                    raise WorkflowError(
+                        f"state {state.name!r}.next_by_approval[{approval_type!r}] "
+                        f"-> {target!r} is not defined"
+                    )
 
             if state.kind is StateKind.TERMINAL:
                 continue
 
-            if state.next is None:
-                raise WorkflowError(f"non-terminal state {state.name!r} has no `next`")
+            if state.next is None and not state.next_by_approval:
+                raise WorkflowError(
+                    f"non-terminal state {state.name!r} has no `next` or `next_by_approval`"
+                )
 
             if state.runs_agent and not state.role:
                 raise WorkflowError(f"state {state.name!r} runs an agent but has no `role`")
 
-            if state.kind is StateKind.GATE and not state.approval_type:
+            if state.kind is StateKind.GATE and not (state.approval_type or state.next_by_approval):
                 raise WorkflowError(f"gate {state.name!r} has no `approval_type`")
 
-            if state.completion == "approval" and not state.approval_type:
+            if (
+                state.completion == "approval"
+                and not (state.approval_type or state.next_by_approval)
+            ):
                 raise WorkflowError(
-                    f"state {state.name!r} completes by approval but has no `approval_type`"
+                    f"state {state.name!r} completes by approval but has no "
+                    f"`approval_type` or `next_by_approval`"
                 )
 
         self._assert_reachable()
@@ -150,6 +173,8 @@ class WorkflowDefinition:
             for target in (state.next, state.on_failure, state.on_reject):
                 if target:
                     frontier.append(target)
+            for target in (state.next_by_approval or {}).values():
+                frontier.append(target)
 
         orphans = set(self.states) - seen
         # Exceptional states are entered programmatically, not via an edge.
@@ -168,7 +193,7 @@ class WorkflowDefinition:
         state = self.get(frm)
         return to in {
             t for t in (state.next, state.on_failure, state.on_reject) if t
-        } or to in {"cancelled", "failed", "blocked"}
+        } or to in (state.next_by_approval or {}).values() or to in {"cancelled", "failed", "blocked"}
 
     def advance(self, frm: str, *, approval_type: str | None = None) -> str:
         """Return the state that follows `frm` on the happy path.
@@ -176,10 +201,27 @@ class WorkflowDefinition:
         A gate or approval-completed state refuses to move without the exact
         approval type it declared. This is where "looks good" is prevented from
         becoming an approval -- the caller must present a typed event.
+
+        A state with `next_by_approval` (several valid destinations) picks
+        the one the given `approval_type` maps to -- still a typed human
+        event deciding it, never the agent; see State.next_by_approval.
         """
         state = self.get(frm)
         if state.kind is StateKind.TERMINAL:
             raise WorkflowError(f"state {frm!r} is terminal")
+
+        if state.next_by_approval:
+            if approval_type is None:
+                raise WorkflowError(
+                    f"state {frm!r} requires one of {sorted(state.next_by_approval)}; none given"
+                )
+            target = state.next_by_approval.get(approval_type)
+            if target is None:
+                raise WorkflowError(
+                    f"state {frm!r} requires one of {sorted(state.next_by_approval)}, "
+                    f"got {approval_type!r}"
+                )
+            return target
 
         if state.requires_approval:
             if approval_type is None:

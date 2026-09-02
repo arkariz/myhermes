@@ -372,19 +372,31 @@ class TurnRunner:
                 payload={"commit": commit_hash},
             )
 
+    # States where DiffProvider is expected to have something to show --
+    # implementation is the normal entry; review/qa are reachable directly
+    # too, without ever passing through implementation first, when an
+    # imported project's onboarding audit (State.next_by_approval) routes
+    # straight there because the code already exists. Capturing the base
+    # revision lazily on whichever of these is entered first, rather than
+    # only "implementation", is what makes that diff correct instead of
+    # permanently empty: "no changes since import" is the true answer for
+    # a project whose base revision is the moment it was imported.
+    _DIFF_BASE_REVISION_STATES = ("implementation", "review", "qa")
+
     def _ensure_implementation_base_revision(self, workflow_state_name: str) -> None:
         """Capture the project source's revision the first time a project
-        enters `implementation`, so `DiffProvider` always diffs against
-        "before the builder touched anything" -- including across a QA
-        rejection sending work back through `implementation` more than
-        once, where the diff should stay cumulative from the original
-        start rather than resetting per attempt.
+        enters implementation/review/qa (see _DIFF_BASE_REVISION_STATES),
+        so `DiffProvider` always diffs against "before the builder touched
+        anything" -- including across a QA rejection sending work back
+        through `implementation` more than once, where the diff should stay
+        cumulative from the original start rather than resetting per
+        attempt.
 
         Best-effort and silent: no project source configured, or the
         source isn't a git repo, both mean `DiffProvider` will find no
         base revision later and simply show no diff -- not a turn failure.
         """
-        if workflow_state_name != "implementation" or self.project_source_root is None:
+        if workflow_state_name not in self._DIFF_BASE_REVISION_STATES or self.project_source_root is None:
             return
         if "implementation_base_revision" in self.store.read_state():
             return

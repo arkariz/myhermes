@@ -25,7 +25,7 @@ def test_shipped_config_loads_and_validates(wf):
 def test_every_non_terminal_state_has_a_successor(wf):
     for state in wf.states.values():
         if state.kind is not StateKind.TERMINAL:
-            assert state.next, f"{state.name} has no next"
+            assert state.next or state.next_by_approval, f"{state.name} has no next"
 
 
 def test_agent_states_declare_a_role(wf):
@@ -86,6 +86,50 @@ def test_unknown_state_is_rejected(wf):
         wf.get("not-a-state")
 
 
+# ---- next_by_approval: onboarding's several possible destinations ---------
+
+
+def test_backlog_routes_to_onboarding_on_import_project(wf):
+    assert wf.advance("backlog", approval_type="IMPORT_PROJECT") == "onboarding"
+
+
+def test_backlog_still_routes_to_discovery_on_start_project(wf):
+    assert wf.advance("backlog", approval_type="START_PROJECT") == "discovery"
+
+
+def test_backlog_refuses_an_unknown_approval_type(wf):
+    with pytest.raises(WorkflowError, match="one of"):
+        wf.advance("backlog", approval_type="NOT_A_REAL_TYPE")
+
+
+def test_backlog_refuses_no_approval_type_at_all(wf):
+    with pytest.raises(WorkflowError, match="one of"):
+        wf.advance("backlog")
+
+
+@pytest.mark.parametrize("approval_type,expected", [
+    ("TO_DISCOVERY", "discovery"),
+    ("TO_PLANNING", "planning"),
+    ("TO_PRODUCT_DESIGN", "product-design"),
+    ("TO_ARCHITECTURE", "architecture"),
+    ("TO_AWAITING_APPROVAL", "awaiting-approval"),
+    ("TO_IMPLEMENTATION", "implementation"),
+    ("TO_REVIEW", "review"),
+    ("TO_QA", "qa"),
+])
+def test_onboarding_routes_to_every_declared_destination(wf, approval_type, expected):
+    assert wf.advance("onboarding", approval_type=approval_type) == expected
+
+
+def test_onboarding_requires_approval_like_any_other_collaborative_state(wf):
+    with pytest.raises(WorkflowError, match="one of"):
+        wf.advance("onboarding")
+
+
+def test_onboarding_role_is_auditor(wf):
+    assert wf.get("onboarding").role == "auditor"
+
+
 # ---- definition validation -------------------------------------------------
 
 
@@ -126,3 +170,43 @@ states:
 """)
     with pytest.raises(WorkflowError, match="unreachable"):
         WorkflowDefinition.load(path)
+
+
+def test_dangling_next_by_approval_target_is_rejected(tmp_path):
+    path = _write(tmp_path, """
+initial: a
+states:
+  a:
+    kind: gate
+    next_by_approval: {GO: nowhere}
+""")
+    with pytest.raises(WorkflowError, match="not defined"):
+        WorkflowDefinition.load(path)
+
+
+def test_next_by_approval_alone_satisfies_the_has_a_next_requirement(tmp_path):
+    # No plain `next`, only next_by_approval -- must not be treated as
+    # "no successor at all".
+    path = _write(tmp_path, """
+initial: a
+states:
+  a:
+    kind: gate
+    next_by_approval: {GO: b}
+  b: {kind: terminal}
+""")
+    wf = WorkflowDefinition.load(path)  # must not raise
+    assert wf.advance("a", approval_type="GO") == "b"
+
+
+def test_next_by_approval_targets_count_toward_reachability(tmp_path):
+    # b is reachable ONLY via a's next_by_approval, not via a plain `next`.
+    path = _write(tmp_path, """
+initial: a
+states:
+  a:
+    kind: gate
+    next_by_approval: {GO: b}
+  b: {kind: terminal}
+""")
+    WorkflowDefinition.load(path)  # must not raise "unreachable"

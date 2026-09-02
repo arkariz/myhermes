@@ -86,6 +86,54 @@ def test_callback_for_a_different_approval_type_is_rejected():
         )
 
 
+# ---- multi-type approvals (State.next_by_approval, e.g. onboarding) --------
+
+PENDING_ONBOARDING = PendingAction(
+    type="approval",
+    approval_types=("TO_DISCOVERY", "TO_IMPLEMENTATION", "TO_QA"),
+    artifact="onboarding-report.md", artifact_revision=1,
+)
+
+
+def test_command_resolves_any_of_several_valid_types():
+    result = resolve_command(
+        "/approve TO_IMPLEMENTATION", PENDING_ONBOARDING, approver="alice",
+        source_turn=None, now=NOW,
+    )
+    assert result["kind"] == "approval"
+    assert result["event"].approval_type == "TO_IMPLEMENTATION"
+
+
+def test_command_rejects_a_type_outside_the_valid_set():
+    with pytest.raises(ApprovalError, match="one of"):
+        resolve_command(
+            "/approve TO_REVIEW", PENDING_ONBOARDING, approver="alice",
+            source_turn=None, now=NOW,
+        )
+
+
+def test_bare_approve_with_several_valid_types_and_none_named_is_rejected():
+    # Unlike the single-type case, there's nothing to default to here --
+    # the human must say which one.
+    with pytest.raises(ApprovalError, match="specify which type"):
+        resolve_command("/approve", PENDING_ONBOARDING, approver="alice", source_turn=None, now=NOW)
+
+
+def test_callback_resolves_any_of_several_valid_types():
+    result = resolve_callback(
+        "TO_QA", 1, PENDING_ONBOARDING, approver="alice", source_turn=None, now=NOW,
+    )
+    assert result["kind"] == "approval"
+    assert result["event"].approval_type == "TO_QA"
+
+
+def test_callback_rejects_a_type_outside_the_valid_set():
+    with pytest.raises(ApprovalError, match="one of"):
+        resolve_callback(
+            "TO_REVIEW", 1, PENDING_ONBOARDING, approver="alice", source_turn=None, now=NOW,
+        )
+
+
 # ---- decision block parsing -------------------------------------------------
 
 

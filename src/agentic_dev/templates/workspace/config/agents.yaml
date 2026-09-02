@@ -21,6 +21,26 @@ defaults:
   context_mode: assembled
 
 roles:
+  # Audits an EXISTING project (config/workflow.yaml's `onboarding` state,
+  # entered via `/approve IMPORT_PROJECT` on `backlog` instead of
+  # START_PROJECT). guided, not assembled: there's no artifact to
+  # pre-assemble yet, only a codebase to explore with its own tools --
+  # same reasoning as builder/reviewer/qa, just over the WHOLE project
+  # instead of one task's scope, hence the larger read_budget. No
+  # context_allowlist/denylist: unlike qa (blinded from builder's own
+  # reasoning on purpose), the auditor is supposed to see everything
+  # that exists, docs included, to judge how far along the project is.
+  auditor:
+    context_mode: guided
+    toolsets: [skills, terminal, file]
+    budget:
+      max_input_tokens: 24000
+      max_output_tokens: 6000
+    read_budget:
+      max_files: 80
+      max_bytes: 800000
+      max_tool_calls: 200
+
   # planner/product-designer/architect all get `file` so they can write
   # their artifact (artifacts/prd.md etc.) directly -- assembled context
   # mode governs how they READ (pre-assembled content, no exploring), which

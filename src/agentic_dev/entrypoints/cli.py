@@ -71,6 +71,15 @@ def cmd_project_new(args: argparse.Namespace) -> int:
     print(f"  state_path: {entry.state_path}")
 
     _maybe_create_telegram_topic(reg, args.name)
+
+    if args.import_existing:
+        # A real typed approval, not a raw state.yaml write -- fires the
+        # same IMPORT_PROJECT event a human would via `/approve
+        # IMPORT_PROJECT`, then auto-continues into onboarding's first
+        # turn (the auditor role, see config/workflow.yaml's `onboarding`
+        # state) exactly like any other approval does.
+        return _approve_and_continue(args.name, store, workflow, "IMPORT_PROJECT")
+
     return 0
 
 
@@ -146,29 +155,29 @@ def cmd_turn(args: argparse.Namespace) -> int:
     return _print_turn_outcome(outcome)
 
 
-def cmd_approve(args: argparse.Namespace) -> int:
-    entry = _registry().get(args.project_id)
-    store = ProjectStore(entry.state_path)
-    workflow = _load_workflow()
+def _approve_and_continue(
+    project_id: str, store: ProjectStore, workflow: WorkflowDefinition, approval_type: str,
+) -> int:
+    """Apply one approval, then auto-continue into the newly-unlocked
+    state so approving doesn't need a manual follow-up message just to
+    kick off work the approval already authorized -- see
+    approval_flow.default_continuation_message. Shared by `cmd_approve`
+    and `cmd_project_new`'s `--import` (which fires IMPORT_PROJECT the
+    same way a human typing `/approve IMPORT_PROJECT` would, not by
+    writing state.yaml directly)."""
     current = store.read_state().get("workflow_state", workflow.initial)
-
     try:
-        next_state = apply_approval(
-            store, workflow, args.approval_type, approver="cli",
-        )
+        next_state = apply_approval(store, workflow, approval_type, approver="cli")
     except (ApprovalError, WorkflowError) as exc:
         print(f"REJECTED: {exc}", file=sys.stderr)
         return 1
 
     print(f"Approved. {current!r} -> {next_state!r}")
 
-    # Auto-continue into the newly-unlocked state so approving doesn't
-    # need a manual follow-up message just to kick off work the approval
-    # already authorized -- see approval_flow.default_continuation_message.
     next_state_obj = workflow.get(next_state)
     if next_state_obj.runs_agent:
-        runner, _ = _build_runner(args.project_id)
-        message = default_continuation_message(args.approval_type, next_state)
+        runner, _ = _build_runner(project_id)
+        message = default_continuation_message(approval_type, next_state)
         try:
             outcome = runner.run_turn(message)
         except TurnBlocked as exc:
@@ -177,6 +186,13 @@ def cmd_approve(args: argparse.Namespace) -> int:
         return _print_turn_outcome(outcome)
 
     return 0
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    entry = _registry().get(args.project_id)
+    store = ProjectStore(entry.state_path)
+    workflow = _load_workflow()
+    return _approve_and_continue(args.project_id, store, workflow, args.approval_type)
 
 
 def cmd_init_workspace(args: argparse.Namespace) -> int:
@@ -245,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--host-path", required=True)
     new.add_argument("--state-path", default=None)
     new.add_argument("--platform", default="flutter")
+    new.add_argument(
+        "--import", dest="import_existing", action="store_true",
+        help="the project at --host-path already exists (any origin, documented or not) "
+             "-- route to onboarding for an audit instead of starting at discovery",
+    )
     new.set_defaults(func=cmd_project_new)
 
     turn = sub.add_parser("turn")

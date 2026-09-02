@@ -76,6 +76,7 @@ def _approve(store: ProjectStore, workflow: WorkflowDefinition, approval_type: s
     pending = PendingAction(
         type="approval" if state.requires_approval else "none",
         approval_type=state.approval_type,
+        approval_types=tuple(state.next_by_approval) if state.next_by_approval else None,
         artifact=state.artifact,
         artifact_revision=state_data.get("artifact_revision", 0),
     )

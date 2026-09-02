@@ -27,6 +27,12 @@ class ApprovalError(Exception):
 class PendingAction:
     type: str                 # "approval" | "question" | None
     approval_type: str | None = None
+    # Several valid approval types instead of one exact match -- a state
+    # with State.next_by_approval (its destination depends on WHICH typed
+    # approval a human gives, not on anything an agent decides). None for
+    # every ordinary single-approval state; resolve_command/resolve_callback
+    # fall back to `approval_type` alone when this is unset.
+    approval_types: tuple[str, ...] | None = None
     artifact: str | None = None
     artifact_revision: int | None = None
 
@@ -38,9 +44,11 @@ class PendingAction:
     def from_dict(cls, d: dict[str, Any] | None) -> "PendingAction":
         if not d:
             return cls.none()
+        approval_types = d.get("approval_types")
         return cls(
             type=d.get("type", "none"),
             approval_type=d.get("approval_type"),
+            approval_types=tuple(approval_types) if approval_types else None,
             artifact=d.get("artifact"),
             artifact_revision=d.get("artifact_revision"),
         )
@@ -63,6 +71,31 @@ def resolve_free_text(text: str, pending: PendingAction) -> dict[str, Any]:
     return {"kind": "feedback", "text": text}
 
 
+def _resolve_requested_type(requested: str | None, pending: PendingAction) -> str:
+    """Match a requested (possibly absent) approval type against everything
+    `pending` actually accepts -- `approval_types` (several valid, from a
+    State.next_by_approval state) when set, else the single `approval_type`
+    every ordinary state uses. Raises ApprovalError on no match, or on an
+    omitted type when more than one would be valid (nothing to default to)."""
+    valid = pending.approval_types or (
+        (pending.approval_type,) if pending.approval_type else ()
+    )
+    if not valid:
+        raise ApprovalError("no approval type is pending to confirm")
+
+    if requested is None:
+        if len(valid) == 1:
+            return valid[0]
+        raise ApprovalError(
+            f"pending approval is one of {sorted(valid)}; specify which type"
+        )
+
+    matches = [t for t in valid if t.upper() == requested.upper()]
+    if not matches:
+        raise ApprovalError(f"pending approval is one of {sorted(valid)}, got {requested!r}")
+    return matches[0]
+
+
 def resolve_command(
     text: str, pending: PendingAction, *, approver: str, source_turn: str | None,
     now: str,
@@ -70,8 +103,9 @@ def resolve_command(
     """Resolve an explicit `/approve [TYPE]` command.
 
     Only produces an approval if pending.type == "approval" AND the command's
-    type (if given) matches pending.approval_type exactly. Everything else is
-    feedback -- including a bare "/approve" typed while nothing is pending.
+    type (if given) matches one of pending's valid types exactly. Everything
+    else is feedback -- including a bare "/approve" typed while nothing is
+    pending, or while more than one type would be valid and none was named.
     """
     match = APPROVE_COMMAND.match(text.strip())
     if not match:
@@ -80,18 +114,14 @@ def resolve_command(
     if pending.type != "approval":
         raise ApprovalError("no approval is pending; /approve has nothing to confirm")
 
-    requested = match.group(1)
-    if requested and requested.upper() != (pending.approval_type or "").upper():
-        raise ApprovalError(
-            f"pending approval is {pending.approval_type!r}, got {requested!r}"
-        )
+    resolved_type = _resolve_requested_type(match.group(1), pending)
 
     return {
         "kind": "approval",
         "event": ApprovalEvent(
             artifact=pending.artifact,
             artifact_revision=pending.artifact_revision,
-            approval_type=pending.approval_type,  # type: ignore[arg-type]
+            approval_type=resolved_type,
             source_turn=source_turn,
             approver=approver,
             timestamp=now,
@@ -116,11 +146,7 @@ def resolve_callback(
     if pending.type != "approval":
         raise ApprovalError("no approval is pending; this button is stale")
 
-    if callback_approval_type != pending.approval_type:
-        raise ApprovalError(
-            f"pending approval is {pending.approval_type!r}, "
-            f"button was for {callback_approval_type!r}"
-        )
+    resolved_type = _resolve_requested_type(callback_approval_type, pending)
 
     if (
         pending.artifact_revision is not None
@@ -136,7 +162,7 @@ def resolve_callback(
         "event": ApprovalEvent(
             artifact=pending.artifact,
             artifact_revision=pending.artifact_revision,
-            approval_type=pending.approval_type,  # type: ignore[arg-type]
+            approval_type=resolved_type,
             source_turn=source_turn,
             approver=approver,
             timestamp=now,
