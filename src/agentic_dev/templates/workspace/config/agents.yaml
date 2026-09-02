@@ -9,6 +9,12 @@
 #
 # context_denylist is a CORRECTNESS invariant, not a preference. A violation
 # fails the turn. Inherited from Pang's QA blinding rule.
+#
+# skills: which named Hermes skill files a role loads (--skills). Distinct
+# from `toolsets` containing the literal string "skills" (the toolset that
+# lets an agent load skill files AT ALL). Empty/omitted means Hermes's own
+# default selection -- add names here once you have real skill files to
+# point a role at.
 
 defaults:
   toolsets: [skills]
@@ -20,8 +26,8 @@ roles:
   # mode governs how they READ (pre-assembled content, no exploring), which
   # is a separate axis from whether they can WRITE their own output.
   # TurnRunner sets their cwd to the project's agent-state root (see
-  # jobs.py::_hermes_cwd), so the relative path they're told about in the
-  # prompt ("artifacts/prd.md") is the same path their own file tool
+  # turn_runner.py::_hermes_cwd), so the relative path they're told about in
+  # the prompt ("artifacts/prd.md") is the same path their own file tool
   # resolves -- found live: granting the tool alone isn't enough without
   # that, since nothing else connects "the path in the prompt" to "where
   # the process is actually running."
@@ -31,9 +37,9 @@ roles:
   # was caught; Hermes silently drops an unrecognized toolset name rather
   # than failing the invocation, so this was never visible as an error,
   # only as roles quietly having no file access at all. builder/reviewer
-  # had carried this typo since Phase 5, invisible until now because every
-  # prior live test mocked hermes_run and never exercised real toolset
-  # resolution.
+  # had carried this typo since an early phase, invisible until now because
+  # every prior live test mocked hermes_run and never exercised real
+  # toolset resolution.
   planner:
     context_mode: assembled
     toolsets: [skills, file]
@@ -65,7 +71,6 @@ roles:
       max_files: 40
       max_bytes: 400000
       max_tool_calls: 120
-    rtk: true
 
   reviewer:
     context_mode: guided
@@ -77,7 +82,6 @@ roles:
       max_files: 30
       max_bytes: 300000
       max_tool_calls: 80
-    rtk: true
     context_denylist:
       - conversations/implementation/
     denylist_reason: >
@@ -94,7 +98,6 @@ roles:
       max_files: 20
       max_bytes: 200000
       max_tool_calls: 60
-    rtk: true
     context_allowlist:
       - artifacts/prd.md#acceptance-criteria
       - git-diff
@@ -120,21 +123,15 @@ sessions:
   max_session_turns: 12
   max_session_age_minutes: 120
 
-  # SPIKE FINDING (verified, not assumed -- see docs/plan.md "Spike results"):
-  # HERMES_PROFILE does NOT isolate memory. Hermes runs a background
-  # "self-improvement" writer that saves user statements to
-  # ~/.hermes/memories/MEMORY.md regardless of --ignore-rules, --safe-mode,
-  # or memory.memory_enabled: false -- and that file is scoped to
-  # HERMES_HOME, not to the active profile. Two different profiles under one
-  # HERMES_HOME both recalled the same planted secret in testing.
-  #
-  # The only verified isolation boundary is a SEPARATE HERMES_HOME directory
-  # per project. This is mandatory, not an optimization: without it, one
-  # project's content can leak into another's context via MEMORY.md.
-  home_scope: project   # one HERMES_HOME per project_id, always
-  home_path_template: "/workspace/agent-state/{project_id}/.hermes-home"
+  # HERMES_HOME resolution (the real cross-project memory isolation
+  # boundary -- see docs/architecture.md and adapters/storage/store.py::
+  # ProjectStore.hermes_home()) is NOT configured here. It used to be
+  # (home_scope/home_path_template), duplicating that one real mechanism
+  # with a second, unwired one. Removed rather than fixed: only one
+  # mechanism should decide this.
 
-  # HERMES_PROFILE is still useful WITHIN one project's isolated home --
-  # it separates model/skills/toolset config per role -- but must never be
-  # relied on for memory isolation across projects.
-  profile_scope: role
+timeouts:
+  # How long one Hermes turn may run before the invocation is killed.
+  # The one timeout worth tuning per deployment -- a slower model or a
+  # long guided-read turn can legitimately need more than this.
+  hermes_turn_seconds: 600

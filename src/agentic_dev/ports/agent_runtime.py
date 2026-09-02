@@ -44,6 +44,7 @@ class HermesRequest:
     skills: str | None = None        # comma-separated
     resume_session_id: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int | None = None   # None -- each adapter's own default
     cwd: Path | None = None   # where a `file`-toolset write/read call
                                # resolves ITS OWN relative paths against --
                                # unset means "whatever this process's own

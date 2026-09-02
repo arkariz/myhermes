@@ -214,14 +214,24 @@ def run(
     request: HermesRequest,
     *,
     usage_file: Path | None = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = None,
     runner=subprocess.run,
 ) -> HermesResult:
     """Execute one turn -- full via `-z`, continuation via `chat -q --resume`.
 
     `runner` is injectable so unit tests exercise argv/env/parsing without a
     real Hermes binary or network call.
+
+    `timeout_seconds` left unset (the default) falls back to
+    `request.timeout_seconds` (config/agents.yaml's own `timeouts:` block,
+    via AgentsConfig.timeouts.hermes_turn_seconds) and, if that's also
+    unset, to 600 -- an explicit argument here still wins, which is what
+    keeps this overridable for callers/tests that don't go through a
+    HermesRequest at all.
     """
+    if timeout_seconds is None:
+        timeout_seconds = request.timeout_seconds if request.timeout_seconds is not None else 600
+
     request.home_dir.mkdir(parents=True, exist_ok=True)
     if usage_file is not None:
         usage_file.parent.mkdir(parents=True, exist_ok=True)

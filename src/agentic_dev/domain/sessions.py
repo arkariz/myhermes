@@ -24,9 +24,11 @@ re-injects it into every subsequent turn, regardless of --ignore-rules,
 from docs. That file is scoped to HERMES_HOME, NOT to HERMES_PROFILE: two
 different profiles under one HERMES_HOME both recalled the same planted
 secret. The only verified isolation boundary is a separate HERMES_HOME
-directory per project (SessionPolicy.home_dir), which every runtime
-invocation for that project must use. Profiles remain useful for
-role-scoped model/skills/toolset config, just not for this.
+directory per project (adapters/storage/store.py::ProjectStore.hermes_home()),
+which every runtime invocation for that project must use. Hermes profiles
+(not modeled here at all -- see role_cfg.toolsets/skills instead) remain
+useful for role-scoped model/skills/toolset config, just not for memory
+isolation.
 """
 
 from __future__ import annotations
@@ -84,36 +86,20 @@ class Session:
 
 @dataclass(frozen=True)
 class SessionPolicy:
+    """Boundary triggers that are NOT derivable from state alone -- see
+    config/agents.yaml's own `sessions:` block, which is where these two
+    values are actually set.
+
+    HERMES_HOME resolution used to live here too (`home_dir()`,
+    `home_scope`, `home_path_template`), duplicating the one place that
+    decision is actually made and used:
+    adapters/storage/store.py::ProjectStore.hermes_home(). Removed as dead
+    weight -- nothing ever called this class's version, and having two
+    "the" isolation-boundary mechanisms, only one of them wired, is exactly
+    the kind of config that looks load-bearing and silently isn't.
+    """
     max_session_turns: int = 12
     max_session_age_minutes: int = 120
-    profile_scope: str = "role"
-    home_scope: str = "project"
-    home_path_template: str = "/workspace/agent-state/{project_id}/.hermes-home"
-
-    def profile_name(self, role: str, project_id: str) -> str:
-        """Hermes profile name.
-
-        NOT an isolation boundary -- verified by spike measurement 3.
-        Hermes's background memory writer persists to
-        ~/.hermes/memories/MEMORY.md, scoped to HERMES_HOME, and two
-        different profiles under one HERMES_HOME both recalled the same
-        planted secret in testing. Profiles only separate model/skills/
-        toolset config; use `home_dir` for the isolation guarantee.
-        """
-        if self.profile_scope == "role_project":
-            return f"ad-{role}-{project_id}"
-        return f"ad-{role}"
-
-    def home_dir(self, project_id: str) -> str:
-        """The HERMES_HOME each invocation for this project MUST use.
-
-        This is the real isolation boundary. Every runtime call for a given
-        project sets HERMES_HOME to this path (mounted as a distinct volume
-        per project), so MEMORY.md and the sessions DB never span projects.
-        Mandatory, not an optimization -- omitting it lets one project's
-        content leak into another's context.
-        """
-        return self.home_path_template.format(project_id=project_id)
 
 
 @dataclass(frozen=True)

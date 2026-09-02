@@ -31,7 +31,7 @@ def run(
     *,
     usage_file: Path | None = None,
     base_url: str,
-    timeout_seconds: float = 600.0,
+    timeout_seconds: float | None = None,
 ) -> HermesResult:
     """Same contract as runtime.hermes.run(), over HTTP.
 
@@ -40,7 +40,17 @@ def run(
     for a local server) -- the caller's job to know, not this function's;
     it has no default because a silently-wrong default is worse than a
     required argument.
+
+    `timeout_seconds` left unset falls back to `request.timeout_seconds`
+    (then 600) same as adapters/hermes/invocation.py's in-process path --
+    forwarded to the server in the payload so it actually governs the
+    subprocess timeout there too, AND used (plus a fixed buffer) as THIS
+    HTTP call's own timeout, so the transport doesn't cut the connection
+    short while the server is still legitimately waiting on a slow turn.
     """
+    effective_timeout = timeout_seconds if timeout_seconds is not None else (
+        request.timeout_seconds if request.timeout_seconds is not None else 600
+    )
     payload = {
         "prompt": request.prompt,
         "home_dir": str(request.home_dir),
@@ -51,10 +61,11 @@ def run(
         "resume_session_id": request.resume_session_id,
         "usage_file": str(usage_file) if usage_file else None,
         "cwd": str(request.cwd) if request.cwd else None,
+        "timeout_seconds": request.timeout_seconds,
     }
 
     try:
-        response = httpx.post(f"{base_url}/run", json=payload, timeout=timeout_seconds)
+        response = httpx.post(f"{base_url}/run", json=payload, timeout=effective_timeout + 30)
     except httpx.HTTPError as exc:
         raise RuntimeClientError(f"could not reach runtime server at {base_url}: {exc}") from exc
 

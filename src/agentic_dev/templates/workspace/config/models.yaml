@@ -1,38 +1,30 @@
 # Role -> model routing. Workflow code names a ROLE, never a provider.
-# The gateway is a port: LiteLLM by default, KeiRouter droppable in via base_url.
-
-gateway:
-  # OpenAI-compatible base URL. Overridden by AGENTIC_GATEWAY_URL.
-  base_url: http://gateway:4000/v1
-  provider: openrouter
+#
+# `${VAR:-default}` is this file's own placeholder syntax (resolved by
+# domain/roles.py::resolve_env_placeholders against the process
+# environment, NOT by YAML) -- set the env var in .env to override a
+# role's model without editing this file. Commented-out examples of every
+# var live in .env.example.
 
 routing:
   planner:
     provider: openrouter
     model: ${PLANNER_MODEL:-anthropic/claude-sonnet-4.6}
-    preferred_context_window: 32000
   product-designer:
     provider: openrouter
     model: ${DESIGNER_MODEL:-anthropic/claude-sonnet-4.6}
-    preferred_context_window: 32000
   architect:
     provider: openrouter
     model: ${ARCHITECT_MODEL:-anthropic/claude-sonnet-4.6}
-    preferred_context_window: 64000
   builder:
     provider: openrouter
     model: ${BUILDER_MODEL:-deepseek/deepseek-v3}
-    preferred_context_window: 32000
-    fallback_context_window: 16000
   reviewer:
     provider: openrouter
     model: ${REVIEWER_MODEL:-deepseek/deepseek-v3}
-    preferred_context_window: 32000
   qa:
     provider: openrouter
     model: ${QA_MODEL:-deepseek/deepseek-v3}
-    preferred_context_window: 16000
   summarizer:
     provider: openrouter
     model: ${SUMMARIZER_MODEL:-deepseek/deepseek-v3}
-    preferred_context_window: 16000

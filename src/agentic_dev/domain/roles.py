@@ -11,11 +11,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 import yaml
 
 from .context.budget import ReadBudget
+from .sessions import SessionPolicy
 
 _ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 
@@ -57,18 +58,35 @@ class RoleConfig:
     role: str
     context_mode: str                     # "assembled" | "guided"
     toolsets: tuple[str, ...] = ()
+    # Which named skill files Hermes loads for this role (--skills, a
+    # comma-separated CLI flag) -- distinct from `toolsets` containing the
+    # literal string "skills" (the toolset that lets an agent load skill
+    # files at all). Empty means Hermes's own default skill selection.
+    skills: tuple[str, ...] = ()
     budget: RoleBudget = field(default_factory=lambda: RoleBudget(12000, 4000))
     read_budget: ReadBudget | None = None
     allowlist: tuple[str, ...] = ()
     denylist: tuple[str, ...] = ()
     denylist_reason: str | None = None
-    rtk: bool = False
+
+
+@dataclass(frozen=True)
+class Timeouts:
+    # How long one Hermes turn (a full boundary rebuild OR a resumed
+    # continuation) may run before the invocation is killed. The single
+    # timeout that's actually worth tuning per deployment -- a slower model
+    # or a long guided-read turn can legitimately need more than the
+    # default; everything else (index build, Telegram API calls) is a
+    # fixed, rarely-tuned infra timeout that stays a plain constructor
+    # default in its own adapter instead.
+    hermes_turn_seconds: int = 600
 
 
 @dataclass(frozen=True)
 class AgentsConfig:
     roles: dict[str, RoleConfig]
-    session_policy_raw: dict[str, Any]
+    session_policy: SessionPolicy
+    timeouts: Timeouts
 
     @classmethod
     def load(cls, path: Path | str) -> "AgentsConfig":
@@ -78,12 +96,14 @@ class AgentsConfig:
         for name, spec in (raw.get("roles") or {}).items():
             spec = spec or {}
             merged_toolsets = spec.get("toolsets", defaults.get("toolsets", []))
+            merged_skills = spec.get("skills", defaults.get("skills", []))
             budget_spec = spec.get("budget") or {}
             read_budget_spec = spec.get("read_budget")
             roles[name] = RoleConfig(
                 role=name,
                 context_mode=spec.get("context_mode", defaults.get("context_mode", "assembled")),
                 toolsets=tuple(merged_toolsets),
+                skills=tuple(merged_skills),
                 budget=RoleBudget(
                     max_input_tokens=int(budget_spec.get("max_input_tokens", 12000)),
                     max_output_tokens=int(budget_spec.get("max_output_tokens", 4000)),
@@ -96,9 +116,20 @@ class AgentsConfig:
                 allowlist=tuple(spec.get("context_allowlist", [])),
                 denylist=tuple(spec.get("context_denylist", [])),
                 denylist_reason=spec.get("denylist_reason"),
-                rtk=bool(spec.get("rtk", False)),
             )
-        return cls(roles=roles, session_policy_raw=raw.get("sessions") or {})
+
+        sessions_spec = raw.get("sessions") or {}
+        session_policy = SessionPolicy(
+            max_session_turns=int(sessions_spec.get("max_session_turns", 12)),
+            max_session_age_minutes=int(sessions_spec.get("max_session_age_minutes", 120)),
+        )
+
+        timeouts_spec = raw.get("timeouts") or {}
+        timeouts = Timeouts(
+            hermes_turn_seconds=int(timeouts_spec.get("hermes_turn_seconds", 600)),
+        )
+
+        return cls(roles=roles, session_policy=session_policy, timeouts=timeouts)
 
     def get(self, role: str) -> RoleConfig:
         if role not in self.roles:

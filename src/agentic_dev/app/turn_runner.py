@@ -113,7 +113,10 @@ class TurnRunner:
         self.models = models
         self.souls_dir = souls_dir
         self.estimator = estimator or TokenEstimator()
-        self.session_policy = session_policy or SessionPolicy()
+        # `agents.session_policy` is what config/agents.yaml's own
+        # `sessions:` block actually feeds -- the explicit param stays for
+        # tests that want to force a policy without a real config file.
+        self.session_policy = session_policy or agents.session_policy
         self.session_manager = SessionManager(self.session_policy)
         self.events = EventLog(store, project_id)
         # None (the default) means InProcessHermesRuntime() -- how every
@@ -320,8 +323,10 @@ class TurnRunner:
             provider=route.provider,
             model=route.model,
             toolsets=",".join(role_cfg.toolsets) if role_cfg.toolsets else None,
+            skills=",".join(role_cfg.skills) if role_cfg.skills else None,
             resume_session_id=decision.session_id if decision.resume else None,
             cwd=self._hermes_cwd(role_cfg),
+            timeout_seconds=self.agents.timeouts.hermes_turn_seconds,
         )
         usage_file = self.store.turn_dir(turn_id) / "usage.json" if not decision.resume else None
         return self.agent_runtime.run(request, usage_file=usage_file)

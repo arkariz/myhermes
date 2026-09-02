@@ -181,38 +181,9 @@ def test_record_turn_increments_and_tracks_failure(manager):
     assert session.last_turn_failed is True
 
 
-def test_profile_scope_role_project_isolates_per_project():
-    policy = SessionPolicy(profile_scope="role_project")
-    assert policy.profile_name("planner", "bonked") == "ad-planner-bonked"
-    assert policy.profile_name("planner", "babylang") == "ad-planner-babylang"
-
-
-def test_profile_scope_role_shares_across_projects():
-    # This is now the DEFAULT, not a fallback -- verified by spike measurement
-    # 3 that HERMES_PROFILE does not isolate memory, so sharing a profile
-    # name across projects costs nothing extra (home_dir does the isolating).
-    policy = SessionPolicy(profile_scope="role")
-    assert policy.profile_name("planner", "bonked") == policy.profile_name(
-        "planner", "babylang"
-    )
-
-
-def test_default_profile_scope_is_role_not_role_project():
-    # An earlier design defaulted to role_project, assuming HERMES_PROFILE
-    # was an isolation boundary. Spike measurement 3 disproved that: two
-    # profiles under one HERMES_HOME both recalled the same planted secret.
-    policy = SessionPolicy()
-    assert policy.profile_scope == "role"
-
-
-def test_home_dir_is_unique_per_project():
-    # The verified isolation boundary. Every runtime invocation for a
-    # project MUST use this HERMES_HOME -- profile name alone is not enough.
-    policy = SessionPolicy()
-    assert policy.home_dir("bonked") != policy.home_dir("babylang")
-    assert "bonked" in policy.home_dir("bonked")
-
-
-def test_home_dir_is_stable_for_the_same_project():
-    policy = SessionPolicy()
-    assert policy.home_dir("bonked") == policy.home_dir("bonked")
+# Hermes-profile scoping and HERMES_HOME templating used to live on
+# SessionPolicy (profile_scope, home_scope, home_path_template,
+# .profile_name(), .home_dir()) -- removed as dead weight: nothing ever
+# called any of it. The real, actually-used isolation boundary is
+# adapters/storage/store.py::ProjectStore.hermes_home(), covered by
+# test_store.py.
