@@ -1,725 +1,270 @@
 # Agentic Dev
 
-Local-first, Dockerized agentic engineering workspace — a redesign of
-[isfaaghyth/pang](https://github.com/isfaaghyth/pang) with a hybrid Hermes
-memory model, role-split context assembly, and a deterministic workflow
-engine. Full architecture and rationale: `docs/plan.md` (mirrors the approved
-planning-session output). What's actually done vs. still spec, phase by
-phase: `docs/progress.md`.
+A local-first, Dockerized system that runs a small team of AI agents
+(planner, designer, architect, builder, reviewer, QA) through a
+deterministic workflow — discovery → planning → design → architecture →
+implementation → review → QA — with typed approval gates, real git
+history, and a codebase-aware index for Flutter/Dart projects. Drive it
+from the CLI or from Telegram.
 
-## Status
+Want the full design rationale, phase-by-phase build history, or the
+layering rules? See [Learn more](#learn-more) at the bottom. This document
+is just: get it running, configure it, use it.
 
-**Docker and Python are working. Phase 1 Steps 0–5 are done.** The Hermes
-spike (Step 2) and the invocation layer it gates (Step 5) were both run and
-debugged for real against `hermes` v0.20.5 + OpenRouter (`openai/gpt-4o-mini`)
-— see `docs/plan.md` § "Phase 1 spike" for the full results table.
+## 1. Prerequisites
+
+- **Python 3.11+** (for the CLI/local path) — or **Docker Desktop** (for
+  the full container topology + Telegram)
+- **git**
+- **An LLM API key.** Defaults to [OpenRouter](https://openrouter.ai/) —
+  any provider Hermes supports works, just change `models.yaml` (see
+  [Configuration](#3-configuration)).
+- **The [Hermes CLI](https://hermes-agent.nousresearch.com)**, if running
+  outside Docker. The `agent-runtime` Docker image already includes it.
+
+## 2. Quick start
+
+Two setup steps, then two paths depending on whether you want Telegram.
+
+### Step 1 — install and bootstrap a workspace
 
 ```bash
 pip install -e ".[dev]"
-pytest
+agentic init-workspace ../agentic-workspace
 ```
 
-349/349 Python tests pass, plus 10 Dart tests in `tools/dart_indexer/`. The test suite is the actual specification of the
-invariants below — read it if the prose and the code ever disagree.
+This creates a **separate sibling repo**, `../agentic-workspace`, holding
+your config, generated state, and project registry — kept out of this code
+repo on purpose (see [Where things live](#4-where-things-live)). Run this
+once per machine.
 
-The code lives in one layered package, `src/agentic_dev/` — see
-`docs/architecture.md` for the layering contract (`domain → ports →
-adapters → app → entrypoints`) and `docs/adr/0001-layered-package.md` for
-why it's shaped that way. Config, generated state, and your own project
-source live in a **separate sibling repo**, `../agentic-workspace` — see
-"Where does what live," below, before you do anything else.
+### Step 2 — add your API key
 
-### Two real bugs the spike found, both fixed
-
-**1. `HERMES_PROFILE` does not isolate memory.** Hermes runs a background
-writer that persists user statements to `~/.hermes/memories/MEMORY.md` and
-re-injects it into every later turn, regardless of `--ignore-rules`,
-`--safe-mode`, or `memory.memory_enabled: false`. That file is scoped to
-`HERMES_HOME`, not to the active profile — two different profiles under one
-`HERMES_HOME` both recalled a secret planted under the other. Verified live
-(planted a distinct secret, confirmed cross-profile recall).
-
-**Fixed:** every project now gets its own `HERMES_HOME` directory
-(`ProjectStore.hermes_home()`, `SessionPolicy.home_dir()`) inside that
-project's own `agent-state` tree. `HERMES_PROFILE` now defaults to `role`
-scope rather than `role_project`, since sharing a profile name across
-projects costs nothing once `home_dir` is doing the actual isolating.
-
-**2. `--usage-file` and `--resume` don't work on the same invocation.**
-`hermes -z`'s actual implementation (`hermes_cli/oneshot.py::run_oneshot`)
-has no `resume` parameter at all — `-z --resume` is dead code even though
-argparse silently accepts the flag. `chat -q --resume` genuinely resumes
-(confirmed: recalled a fact from 3 turns back) but `chat` has no
-`--usage-file` option (hard argparse error). A further wrinkle: on
-`chat -q --resume`, the `session_id:` marker prints to **stderr**, so there's
-no stdout separator between a CLI banner and the real response — an early
-fix that looked for that marker on stdout let the banner leak straight into
-the parsed response.
-
-**Fixed** in `adapters/hermes/invocation.py`, split along the same seam the state
-machine already uses: full turns (never resume) go through `-z` and get
-`--usage-file` for real; continuation turns go through `chat -q --resume`
-and recover usage after the fact via `hermes sessions export`, with response
-text cleaned by known CLI status-icon prefixes rather than a marker that
-doesn't reliably exist on that path.
-
-Provider-side prompt caching was confirmed working as designed (non-zero
-`cache_read_tokens`, growing turn over turn on a resumed session).
-
-## Running this for real
-
-Everything in this repo has been built and verified live — real Hermes
-CLI, real Dart CLI, real git, real Docker containers, real HTTP calls —
-except one thing nobody but you can supply: a real LLM API key. Every
-"turn failed" in this README's own verification runs is deliberate,
-because spending your money without asking isn't something this project
-does on its own behalf. What follows is what's actually left for you.
-
-**Required — nothing here runs a real turn without it:**
-- An API key for whichever provider `models.yaml` routes to (defaults to
-  OpenRouter — `OPENROUTER_API_KEY`). Every role's model can be
-  overridden per `.env.example`.
-
-**Optional — the CLI works without any of this; only Telegram needs it:**
-- A Telegram bot token (`TELEGRAM_BOT_TOKEN`, from @BotFather) and a group
-  with **topics/forum mode enabled**, so `/create` can auto-provision a
-  topic per project (`TELEGRAM_FORUM_CHAT_ID`).
-
-### Where does what live
-
-This code repo (`hermes/`) is pure code — nothing user-specific is meant
-to live in it. A separate sibling repo, `../agentic-workspace`, holds
-everything about *your* setup:
-
-| Location | What | Git |
-|---|---|---|
-| `hermes/.env` | Secrets: `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_FORUM_CHAT_ID`, `AGENTIC_WORKSPACE`, optional `*_MODEL` overrides | **gitignored**, code repo — never commit it |
-| `hermes/.env.example` | The same keys, blank or commented out | tracked, code repo |
-| `../agentic-workspace/config/*.yaml` + `souls/*.md` | Non-secret behavior: role budgets, model routing, the workflow graph, personas | **tracked**, workspace repo — meant to be committed and pushed |
-| `../agentic-workspace/config/projects.yaml` | Project registry (name → host path / state path, plus `telegram_chat_id` — an identifier, not a credential) | tracked, workspace repo |
-| `../agentic-workspace/agent-state/` | Generated per-project state: turn history, indexes, per-project `.hermes-home/` | gitignored, workspace repo |
-| `../agentic-workspace/projects/` | Your actual Flutter/Dart project source, if you point `--host-path` there | gitignored, workspace repo — each project keeps its own `.git` |
-
-Secrets stay in the code repo's `.env` (gitignored since day one) rather
-than the workspace repo specifically *because* the workspace repo is
-meant to be pushed — see `docs/adr/0001-layered-package.md` for the full
-reasoning. `AGENTIC_WORKSPACE` in `.env` is the one line that connects
-the two: unset, it defaults to the sibling `../agentic-workspace`
-resolved relative to this repo.
-
-**A fresh clone needs one bootstrap step before anything else works:**
 ```bash
-pip install -e ".[dev]"
-agentic init-workspace ../agentic-workspace   # creates the sibling repo + template config
-cp .env.example .env                          # fill in OPENROUTER_API_KEY at minimum
-export $(grep -v '^#' .env | xargs)           # or use your own env-loading
+cp .env.example .env
 ```
-`agentic init-workspace --check` verifies settings resolution against the
-current environment without creating anything, if you just want to
-confirm a workspace is already found.
 
-**Fastest path — CLI, no Docker, no Telegram** (after the bootstrap above):
+Open `.env` and fill in `OPENROUTER_API_KEY`. That's the only required
+value — everything else is optional.
+
+### Path A — CLI only, no Docker, no Telegram (fastest)
+
 ```bash
+export $(grep -v '^#' .env | xargs)   # loads .env into your shell
 agentic project new toy --host-path /path/to/a/real/project
 agentic turn toy "Build a habit tracker for one user."
 agentic status toy
 ```
-Or, without the installed console script: `python -m agentic_dev.entrypoints.cli project new toy ...`, etc.
 
-`--host-path` is the project's real source tree on your machine — point
-it at an existing Flutter/Dart project (or any git repo; the Dart indexer
-and diff-aware review just won't have anything Dart-specific to show for
-a non-Dart one). Everything from here is the same loop this whole README
-verified: context assembly, session resume, artifact versioning, the
-builder → review → qa cycle, all against your real project, with real
-model calls now that a real key is set.
+`--host-path` points at a real project on your machine — a Flutter/Dart
+project gets the most out of this (codebase indexing, diff-aware review),
+but any git repo works. From here the workflow drives itself: answer the
+planner's questions with `agentic turn toy "..."`, approve gates with
+`agentic approve toy <TYPE>`, check progress with `agentic status toy`.
 
-**Docker Compose path — the full container topology, plus Telegram:**
+### Path B — Docker Compose, full topology + Telegram
+
 ```bash
-agentic init-workspace ../agentic-workspace   # once, if not already done
-cp .env.example .env   # fill in OPENROUTER_API_KEY, and the Telegram vars if using it
 docker compose build
 docker compose up -d
 ```
-`../agentic-workspace` (or wherever `AGENTIC_WORKSPACE` points on the
-host) is bind-mounted into both containers at `/workspace`, so
-`config/`, `agent-state/`, and `projects/` sit as siblings inside the
-container. `--host-path /workspace/projects/<name>` (or `/create` from
-Telegram, which defaults there via `TELEGRAM_DEFAULT_HOST_ROOT`) is how a
-project gets a real body of code to work against. `docker compose logs -f
-orchestrator` is where turns, approvals, and any Telegram activity show up.
 
-**What you get either way**: the full state machine (discovery → planning
-→ product-design → architecture → implementation → review → qa →
-awaiting-merge), typed `/approve` gates, real git history for both
-`artifacts/` and your project's own source, a real Dart-aware codebase
-index once your project has a `pubspec.yaml`, and — if you configure a
-`summarizer` route (on by default) — continuity across session boundaries
-via a running summary. `agentic status <project>` and the raw
-`../agentic-workspace/agent-state/<project>/events.jsonl` are the two
-places to see what actually happened, at any point.
-
-## What's implemented
-
-| Module | Covers |
-|---|---|
-| `../agentic-workspace/config/workflow.yaml` | The state graph — autonomous / collaborative / gate states, retry bounds |
-| `../agentic-workspace/config/agents.yaml` | Role budgets, context mode (assembled vs guided), denylists |
-| `agentic_dev/domain/workflow.py` | Loads + validates the graph; `advance()` refuses anything but a typed approval |
-| `agentic_dev/domain/sessions.py` | The 8 boundary triggers deciding resume vs. rebuild of a Hermes session |
-| `agentic_dev/domain/context/` | Builder, budget/volatility ordering, denylist enforcement, manifest |
-| `agentic_dev/domain/approvals.py` | §31 human-input semantics + `\`\`\`decision` block parsing |
-| `agentic_dev/adapters/storage/store.py`, `events.py` | Atomic filesystem persistence, append-only event log |
-| `agentic_dev/adapters/hermes/invocation.py` | Hermes invocation — verified live against real API calls, not just unit-tested against a fake subprocess |
-| `agentic_dev/domain/roles.py` | Loads `agents.yaml`/`models.yaml`, resolves `${VAR:-default}` |
-| `agentic_dev/adapters/registry.py` | `../agentic-workspace/config/projects.yaml` — project name → host path / state path |
-| `agentic_dev/app/turn_runner.py` | `TurnRunner` — one full turn, wired end to end, verified live |
-| `agentic_dev/entrypoints/cli.py` | `project new` / `turn` / `approve` / `status` / `init-workspace`, verified live end to end |
-| `agentic_dev/app/approval_flow.py` | `apply_approval()` — the §31 approval path shared by the CLI and Telegram, so neither reimplements it |
-| `agentic_dev/app/summarizer.py` | §17.3 incremental summarization — one cheap one-shot per successful turn, folded into a running per-state summary; optional (skipped with no `summarizer` route configured) |
-| `agentic_dev/adapters/git/artifacts.py` | `artifacts/` as a real git repo — `TurnRunner` snapshots it after every successful turn, no empty commits |
-| `agentic_dev/adapters/telegram/topics.py`, `agentic_dev/entrypoints/telegram/` | `/link`, `/status`, plain-text turns via an async inbox worker, inline-button approvals with stale-revision rejection, auto-created forum topics per project |
-| `agentic_dev/entrypoints/http/server.py`, `agentic_dev/adapters/hermes/http_client.py` | The HTTP boundary for the container topology, called by `turn_runner.py` when `AGENTIC_RUNTIME_URL` is set — verified live |
-| `compose.yaml`, `deploy/agent-runtime/`, `deploy/orchestrator/` | The real orchestrator/agent-runtime container split — verified live |
-| `tools/dart_indexer/`, `agentic_dev/ports/indexer.py`, `agentic_dev/adapters/indexing/` | `CodebaseIndexer` port + `DartAnalyzerIndexer` (real `package:analyzer`-based Dart CLI) + `freshness.py` (git-commit incremental rebuild) + `IndexProvider` (file inventory + one-hop dependency expansion + keyword relevance ranking), wired into `TurnRunner` by default. Verified live |
-| `agentic_dev/adapters/exec/rtk.py` | Tool-output compression (ANSI stripping, repeated-line collapsing, long-run truncation) + measured compression ratio. Verified live |
-| `agentic_dev/entrypoints/http/server.py::/exec` | Runs a literal `argv` (no shell) in a given `cwd`, returns its RTK-compressed output. Verified live over real HTTP against both a bare `uvicorn` process and the real `agent-runtime` container, running actual `flutter create`/`pub get` |
-| `agentic_dev/adapters/git/project.py` | Real git integration against the project's own source tree — commit the builder's changes, diff since a base revision. Never `git init`s a project it doesn't own. Verified live |
-| `agentic_dev/adapters/context/providers.py::DiffProvider` | The builder's real diff, embedded for reviewer/qa — `implementation_base_revision` captured once per implementation loop, `SOURCE_COMMITTED` after every successful builder turn. Verified live |
-| `../agentic-workspace/config/souls/{builder,reviewer,qa}.md` | Persona files for the three engineering-workflow roles, closing a gap where they were configured with no soul to match |
-| `deploy/agent-runtime/Dockerfile` | Real Flutter SDK (`stable` channel, host-platform precache) on top of Hermes — `flutter create`/`pub get`/`analyze`/`test` verified live inside the built image and over a real `/exec` HTTP call |
-| `agentic_dev/entrypoints/http/server.py::/index`, `agentic_dev/adapters/indexing/remote.py::RemoteIndexer` | Codebase indexing over HTTP for the containerized topology — the orchestrator container has no Dart SDK on purpose, so `RemoteIndexer` calls agent-runtime's real Dart CLI instead of shelling out locally. Verified live |
-| `compose.yaml` project-source volume + orchestrator container fixes | Shared `/workspace/projects` volume, `git` added to the orchestrator image, `summarizer.py` routed through `runtime_url` — three real bugs found and fixed by actually running the compose stack. Verified live end to end |
-| `benchmark/` | Context/token effectiveness vs. a naive Hermes-default, plus a denylist correctness check |
-
-See `docs/architecture.md` for how these modules are organized into layers
-and why imports may only point downward between them.
-
-## What's still a spec, not code
-
-- Resolved (not just AST) Dart analysis (`calls`/`instantiates` edges,
-  needs `flutter pub get` + a real `AnalysisContextCollection`), and a
-  `GraphifyIndexer` for non-Dart repos — see `docs/progress.md` Phase 4.
-- No role's toolset yet routes a terminal command through `/exec` instead
-  of Hermes's own CLI sandbox — the endpoint exists and is verified live,
-  but nothing calls it end to end from a real turn.
-- Android SDK + JDK in `deploy/agent-runtime/Dockerfile` — `flutter build
-  apk` needs both; `pub get`/`analyze`/`test` don't and already work.
-  A genuinely large, separate download left for its own pass.
-- Branch checkout in `project_git.py` — not built, and nothing in this
-  system's workflow currently operates on more than the project's current
-  branch/working tree, so there's no real caller for it yet.
-- The four Hermes spike measurements (`docs/plan.md` "Phase 1 spike") as
-  an automated regression suite, re-run when the Hermes version bumps —
-  currently a one-time recorded live run, not a repeatable check. Not
-  automated here on purpose: re-running it costs real LLM API spend, which
-  shouldn't happen without you choosing to spend it.
-- Everything above this point is code and infrastructure. What's left to
-  make it usable is entirely things only you can supply: an `OPENROUTER_API_KEY`
-  (or another provider Hermes supports), and — if you want the Telegram
-  interface rather than the CLI — a bot token and a group with topics
-  enabled. See "Running this for real," below.
-
-## Phase 1 is done and verified live
-
-`agentic_dev/app/turn_runner.py` (`TurnRunner`) ties state machine + sessions
-+ context builder + `agentic_dev/adapters/hermes/invocation.py` + store into
-one turn. `agentic_dev/entrypoints/cli.py` drives it: `project new`, `turn`,
-`approve`, `status`. `agentic_dev/domain/roles.py` and
-`agentic_dev/adapters/registry.py` load `agents.yaml`/`models.yaml`/`projects.yaml`.
-169/169 tests pass at the time, all with `hermes_run` monkeypatched — no
-subprocess, no network call, no cost (the suite has since grown; see
-"Status," above, for the current total).
-
-**Then the whole thing was run for real**, no mocks, against the actual
-CLI and OpenRouter (via a one-off demo script that has since been deleted
-along with the rest of `docker/spike/` — see `docs/adr/0001-layered-package.md`;
-the same loop is what "Fastest path" above walks you through): `project new`
-→ `approve START_PROJECT` → two discovery turns (the second one a genuine
-`chat -q --resume`, confirmed by the response correctly incorporating the
-first turn's requirement) → `approve APPROVE_DISCOVERY` → `status` showing
-`session: (none)` (the boundary invalidation firing live, not just in a
-unit test) → a fresh planning turn → `approve APPROVE_PRD`. Every state
-transition, every session open/resume/invalidate, and the exact-typed-
-approval rejection (a wrong approval type was correctly refused, exit 1)
-behaved exactly as designed.
-
-## Incremental summarization (§17.3)
-
-The one piece of Phase 1's original Step 6 that was scoped but never built
-until now: `agentic_dev/app/summarizer.py`. After every successful turn (not
-just at boundaries -- conditioning it on `SessionManager`'s own boundary
-decision would couple two things that don't need to know about each other,
-and it's one cheap call on a cheap model, `models.yaml` routes
-`summarizer` to `deepseek-v3`), `TurnRunner` folds the new turn into a
-running per-state summary: `summarize(previous_summary + new_turn)`,
-preserving decisions, open questions, constraints, rejected alternatives,
-artifact status, and next actions. `agentic_dev/adapters/context/providers.py::SummaryProvider`
-then feeds that summary into every later context build (layer 4, alongside
-recent turns, per the brief's own cache-layout grouping).
-
-This is what a session boundary actually loses without it: `SESSION_
-INVALIDATED` means the next turn's rebuild has nothing but the artifact and
-whatever raw conversation still fits in `RecentTurnsProvider`'s
-3-turn window. The summary is what carries continuity across that reset
-instead of relying on an opaque, now-discarded Hermes transcript. Optional
-by construction — a project whose `models.yaml` has no `summarizer` route
-just never calls this, same "absent config, unchanged behavior" pattern as
-Telegram's forum-topic auto-creation.
-
-## The runtime HTTP boundary
+Both containers mount `../agentic-workspace` at `/workspace`. Use
+`--host-path /workspace/projects/<name>` for a project created via the
+CLI, or use `/create` from Telegram (see [Telegram setup](#6-telegram-setup)).
 
 ```bash
-uvicorn agentic_dev.entrypoints.http.server:app --port 8000
+docker compose logs -f orchestrator   # watch turns, approvals, Telegram activity
+docker compose run --rm orchestrator agentic status toy   # one-off CLI command against the running stack
 ```
 
-`agentic_dev/entrypoints/http/server.py` — `POST /run` wraps
-`agentic_dev.adapters.hermes.invocation.run()` behind HTTP,
-unchanged: same argv selection, same `HERMES_HOME` env handling, same
-response cleaning. This is the container-topology boundary the brief calls
-for — the orchestrator has no Docker socket (least privilege), so it can't
-`docker exec` into agent-runtime; agent-runtime exposes this instead.
+## 3. Configuration
 
-Verified live: started the real server, hit `/health`, then `POST /run`
-with no `hermes` binary installed on this host (it only exists inside the
-`agent-runtime` container) — got back a real `HTTP 502` with
-`"failed to launch hermes: [WinError 2] The system cannot find the file
-specified"`, proving the request parsing → invocation attempt → error
-mapping path end to end, not just against a mock. 7 tests
-(`tests/test_server.py`) cover the same paths with `hermes_run` mocked for
-speed and repeatability.
+Everything behavior-related lives in `../agentic-workspace/config/` —
+**edited by hand, no rebuild needed.**
 
-**`agentic_dev/app/turn_runner.py` now calls this over HTTP when configured
-to.** `agentic_dev/adapters/hermes/http_client.py`'s `run()` is the same
-contract as `agentic_dev.adapters.hermes.invocation.run()` (same request
-shape, same `HermesResult`), just reachable over HTTP. `TurnRunner` takes an
-optional `runtime_url`; unset (the default), it calls the in-process
-invocation exactly as before — every prior live run stays reproducible with
-zero config. Set `AGENTIC_RUNTIME_URL` (read by both
-`agentic_dev/entrypoints/cli.py` and `agentic_dev/entrypoints/telegram/handlers.py`)
-and every Hermes invocation routes through the HTTP server instead, no other
-code changes needed.
+### API key
 
-Verified live end to end, across real process boundaries: started the real
-server, ran `agentic project new` → `approve` → `turn` in a **separate CLI
-process** with `AGENTIC_RUNTIME_URL` pointing at it. The CLI process's
-`httpx` call reached the server process, which attempted a real (and here,
-absent) `hermes` launch, returned a real 502, which
-`adapters/hermes/http_client.py` turned into `RuntimeClientError`, which
-`turn_runner.py` re-raised as a `RuntimeError` that surfaced cleanly in the
-CLI's own traceback — the full chain, not simulated in one process. 5 more
-tests (`tests/test_runtime_client.py`) plus 3 in `tests/test_jobs.py`
-(named for the module's pre-refactor path; covers `turn_runner.py`) cover
-the in-process/HTTP branch selection and error mapping with things mocked.
+`hermes/.env` → `OPENROUTER_API_KEY=...`
 
-## The real container topology
+### Which model each role uses
 
-```bash
-docker compose build
-docker compose up -d agent-runtime
-docker compose run --rm orchestrator agentic project new toy \
-  --host-path /workspace/projects/toy --state-path /workspace/agent-state/toy
+`../agentic-workspace/config/models.yaml`:
+
+```yaml
+routing:
+  builder:
+    provider: openrouter
+    model: ${BUILDER_MODEL:-deepseek/deepseek-v3}
 ```
 
-`compose.yaml` + `deploy/agent-runtime/Dockerfile` (Hermes CLI + a real
-Flutter SDK, serves `agentic_dev/entrypoints/http/server.py`) +
-`deploy/orchestrator/Dockerfile` (state machine, context builder, Telegram
-bot — no Hermes CLI, no Docker socket). Smaller than the plan's original
-diagram, deliberately: no shared Hermes-profile volume (the plan names one;
-mounting it would reintroduce the exact cross-project memory leak the
-Phase 1 spike found and fixed — every request's `home_dir` already lives
-under the agent-state volume both containers mount, so no separate profile
-volume is needed or safe), and no gateway service (never implemented;
-Hermes calls the provider directly).
-
-**Both containers mount the same workspace volume** at `/workspace`
-(`${AGENTIC_WORKSPACE:-../agentic-workspace}` on the host, so `projects/`
-ends up at `/workspace/projects`) — closing a gap that was invisible from
-host/CLI-mode testing alone. Closing it originally surfaced three real
-container-only bugs, found by actually running the compose stack rather
-than trusting that host-mode success implied container-mode success (fixed
-long since, kept here as a record of what actually broke):
-
-1. The orchestrator's entrypoint imported the Dart indexing adapter
-   unconditionally, but the orchestrator image never copied that code in —
-   `project new` couldn't even start.
-2. Fixing that would still fail: `DartAnalyzerIndexer` shells out to a
-   local Dart CLI the orchestrator image doesn't have, by design (the
-   toolchain lives only in agent-runtime). Fixed properly, not papered
-   over — built the `POST /index` endpoint the plan's original diagram
-   names, backed by `agentic_dev/adapters/indexing/remote.py::RemoteIndexer`
-   (same `CodebaseIndexer` shape as `DartAnalyzerIndexer`). The CLI and the
-   Telegram handlers now pick `RemoteIndexer` over `DartAnalyzerIndexer`
-   based on `AGENTIC_RUNTIME_URL`, the same way they already pick between
-   the in-process and HTTP Hermes runtimes.
-3. The orchestrator's `python:3.12-slim` base had no `git` at all —
-   `adapters/git/artifacts.py`, `adapters/git/project.py`, and
-   `adapters/indexing/freshness.py`'s `current_git_revision()` would all
-   have failed the moment any of them ran there. Added it.
-4. The summarizer always called Hermes in-process with no `runtime_url`
-   support — since `models.yaml` configures a `summarizer` route by
-   default, every successful turn in the orchestrator container would have
-   crashed there. Given the same `runtime_url` routing `turn_runner.py`
-   already has.
-
-**Verified live, in full**: real `docker compose build` of both images; a
-real toy Flutter-shaped git project written into the shared volume;
-`RemoteIndexer` calling agent-runtime's real `/index` endpoint and getting
-back real nodes from the real Dart CLI; a real `TurnRunner.run_turn()`
-inside the orchestrator container against that project (only the main
-Hermes call mocked) with the builder's file write, `SOURCE_COMMITTED`, and
-a real `git-diff` manifest entry all working exactly as in host-mode
-testing; and finally, with *nothing* mocked, `agentic turn toy "..."`
-inside the real container producing a clean `"No LLM provider configured"`
-failure via a real HTTP round trip to agent-runtime's real `hermes`
-subprocess — proof the whole chain is wired correctly, with only a real
-API key missing.
-
-One thing this caught live, unrelated to the above: MSYS/Git Bash's
-path-mangling (the same class of bug the Phase 1 spike hit with Docker
-volume args) also mangles a plain string argument like `--host-path
-/workspace/projects/toy` into a Windows path — `MSYS_NO_PATHCONV=1` is
-required before `docker compose run` on Git Bash, same fix as before,
-different call site.
-
-## Codebase intelligence: a real Dart indexer, wired in (Phase 4)
+Either edit the default directly, or override per-role from `.env` without
+touching the file — uncomment the matching line in `.env.example`:
 
 ```bash
-cd tools/dart_indexer && dart pub get   # once
-dart run bin/dart_indexer.dart /path/to/a/flutter/project
+BUILDER_MODEL=anthropic/claude-sonnet-4.6
 ```
 
-`tools/dart_indexer/` is a real Dart CLI built on `package:analyzer` — the
-same engine the Dart LSP uses — walking `lib/`/`test/` and emitting a
-normalized `{nodes, edges}` graph: files, classes, widgets (detected by
-superclass name — `StatelessWidget`/`StatefulWidget`/`State`), mixins,
-enums, extensions, top-level functions, and methods nested under their
-class; edges for `imports`, `declares`, `extends`, `implements`, `with`.
-AST-only, not resolved analysis — no `flutter pub get` required on the
-*target* project first, which is what makes it fast enough to consider
-running more than once at setup. `agentic_dev/adapters/indexing/dart.py`
-calls it via subprocess and normalizes the JSON into
-`agentic_dev/ports/indexer.py`'s `IndexNode`/`IndexEdge` (the
-`CodebaseIndexer` protocol the plan describes, so a future
-`GraphifyIndexer` for non-Dart repos plugs into the same shape).
+### Skills, toolsets, and budgets per role
 
-Verified live twice, not just unit-tested: the Dart CLI directly against a
-toy Flutter-shaped file — correct widget/enum/mixin/function
-classification, correct line numbers, import edges present — then the
-Python adapter calling that same CLI as a real subprocess end to end.
-**Found live:** on Windows, `subprocess.run` needs `dart.bat`, not the
-extension-less `dart` shim (`CreateProcess` can't exec it directly —
-`"%1 is not a valid Win32 application"` — even though a shell invocation
-of bare `dart` resolves it fine via `PATHEXT`); set `DART_EXECUTABLE` to
-the `.bat` on Windows. 10 Dart tests (`tools/dart_indexer/test/`) + 9
-Python tests (`tests/test_dart_adapter.py`, subprocess mocked).
+`../agentic-workspace/config/agents.yaml`:
 
-**Now wired into `TurnRunner`.**
-`agentic_dev/adapters/indexing/freshness.py::ensure_fresh()` rebuilds only
-when a project's `git rev-parse HEAD` has actually moved since the last
-cached index — freshness/incremental indexing by git commit, the gap the
-brief calls out Pang leaving open.
-`agentic_dev/adapters/context/providers.py::IndexProvider` hands the resulting file inventory
-to guided-retrieval roles as references (paths, not embedded content).
-`TurnRunner._current_index_revision()` computes the real value every turn
-for a guided role with a project source configured, persists it to
-`state.yaml`, and feeds it to `SessionManager.decide()` — the
-`index_revision` boundary trigger (one of the original 8) is exercised
-against a real indexer's output for the first time, not a synthetic
-string. Wired by default in both `agentic_dev/entrypoints/cli.py` and
-`agentic_dev/entrypoints/telegram/handlers.py`; inert (degrades to "no index," never breaks a
-turn) for a non-Dart project or a host with no Dart SDK.
-
-**Verified live**: a real `TurnRunner`, a real toy Flutter-shaped git
-project, the real Dart CLI, `hermes_run` mocked (the appropriately-scoped
-mock — everything *except* the model call ran for real). `state.yaml`'s
-`index_revision` held the project's actual commit hash, and the turn's
-real `manifest.yaml` listed `lib/app.dart` with
-`reason: present in the codebase index`. 13 more tests across
-`test_freshness.py`/`test_providers.py`/`test_jobs.py`.
-
-**Dependency expansion and relevance ranking now live in `IndexProvider`**
-too — the other two things named in the same plan sentence as the file
-inventory. Four priority tiers select from, lower wins when the budget is
-tight: 5 explicit reference (`ReferencedFilesProvider`) · 7 one-hop import
-of a referenced file · 8 a task keyword appears in the file's path · 9
-plain inventory. Expansion follows only the *referenced* files' own
-`imports` edges one hop — not a transitive closure over the whole graph,
-which would blur "expanded" into "everything." The Dart indexer records
-import edges by raw URI, not a resolved file, so resolution happens in
-`IndexProvider` itself: relative imports resolve by path math against the
-importing file's directory, `package:<name>/...` self-imports resolve via
-the project's own `pubspec.yaml` name. Relevance ranking is a plain
-keyword-in-path match against the task text — deterministic (same task
-text always ranks the same way, which reproducibility depends on), not an
-embedding call. **Verified live** against the real Dart CLI: a toy project
-where a referenced file had both a relative import and a self-package
-import — both resolved to real project files and were promoted to
-priority 7. 4 new tests in `tests/test_providers.py`.
-
-**Still deliberately not built**: resolved analysis (`calls`/`instantiates`
-edges — needs `flutter pub get` + a real `AnalysisContextCollection`; the
-plan's slower primary mode, AST-only stays what exists here since nothing
-yet needs a resolved call graph) and a `GraphifyIndexer` for non-Dart repos
-(lower priority than the above for this project's actual Flutter/Dart
-scope).
-
-## Phase 5: the builder actually commits, and reviewer/QA see a real diff
-
-`agentic_dev/adapters/git/project.py` is real git integration against the
-**project's own source tree** — not agent-state's own git repos (see
-`agentic_dev/adapters/git/artifacts.py`, a separate repo scoped to
-`artifacts/`). It never `git init`s a project: unlike `artifacts/`, which
-this system owns outright, the project source is the user's, so a non-git
-project source degrades to "no commit, no diff" — the same convention
-`agentic_dev/adapters/indexing/freshness.py` already established for
-`current_git_revision()` — rather than initializing a repo nobody asked
-for.
-
-`TurnRunner` now:
-
-- **Captures `implementation_base_revision`** in `state.yaml` the first
-  time a project enters `implementation` — once, not per attempt, so a
-  QA rejection sending work back through `implementation` keeps the diff
-  cumulative from the true start rather than resetting.
-- **Commits the builder's actual changes** to the project's own git
-  history after every successful `implementation` turn
-  (`SOURCE_COMMITTED` event; no empty commits, same reasoning as
-  `artifact_versioning.commit()`).
-- **Hands `reviewer`/`qa` the real diff** via the new
-  `DiffProvider` — embedded content (not a path reference, unlike the
-  file inventory), key `git-diff`, matching `qa`'s existing
-  `context_allowlist` entry for exactly that string. Builder itself gets
-  no `DiffProvider` — there's nothing to diff against on the turn that's
-  still producing the change.
-
-Also found and fixed while finishing this phase: `builder`, `reviewer`,
-and `qa` had been fully configured in `agents.yaml` and `workflow.yaml`
-with **no soul file** to match — `RoleSoulProvider` degrades that to
-silently contributing nothing rather than erroring, so three of the seven
-agent-running roles had no persona at all and nothing surfaced it.
-`../agentic-workspace/config/souls/{builder,reviewer,qa}.md` close the
-gap, and `tests/test_souls.py` asserts every agent-running workflow role
-has a soul file so it can't happen silently again.
-
-**Verified live**: a real toy Flutter-shaped git project, the real Dart
-indexer, a real `implementation → review` turn sequence (only
-`hermes_run` mocked) — the `SOURCE_COMMITTED` event fired,
-`implementation_base_revision` held the project's real pre-change commit,
-and the reviewer's actual rendered prompt embedded the real diff text
-(`+class Feature`). 19 new tests across `test_project_git.py`,
-`test_providers.py`, and `test_jobs.py`.
-
-## RTK: tool-output compression, now served over HTTP
-
-`agentic_dev/adapters/exec/rtk.py` implements the job the plan's "RTK (Rust Token Killer)"
-concept names — shrinking verbose tool output before it re-enters
-context — in Python rather than vendoring the external Rust binary the
-brief references. `compress()` strips ANSI escape codes, collapses runs of
-3+ consecutive identical lines to one line plus a repeat count (a stalled
-progress spinner or a lint warning repeated per file), and truncates a
-single unbroken block over 60 lines to its first/last 20. `run()` wraps a
-real subprocess — stdout and stderr merged before compression, since a
-build tool interleaves them meaningfully — and returns a *measured*
-`CompressionResult.ratio`, never an assumed one; the plan is explicit RTK
-should be dropped if it doesn't pay off, which only a real number can
-decide. 8 tests, including one against a real subprocess printing 500
-identical lines (>90% measured reduction, not asserted from a fixture).
-
-**`agentic_dev/entrypoints/http/server.py::POST /exec`** is the endpoint
-the plan names for RTK-wrapped `flutter pub get/analyze/test/build apk`: it
-runs a literal `argv` (a list, not a shell string — nothing for a shell to
-reinterpret) in a given `cwd` and returns `rtk.run()`'s compressed output
-plus the measured ratio. Generic on purpose — the endpoint doesn't need to
-know which specific tool it's running, only how to run and compress *a*
-command, whether that ends up being `flutter`, `git`, or `rg`.
-
-**Verified live three times now**: FastAPI's `TestClient` (in-process, 5
-tests in `tests/test_server.py`); a real `uvicorn` subprocess reached over
-an actual HTTP call from a separate Python process (500 repeated lines
-came back compressed to one, 99.66% measured reduction); and, once the
-Flutter SDK landed in `deploy/agent-runtime/Dockerfile` (next section), a
-real `POST /exec` against the running container itself — actual `flutter
-create` and `flutter pub get` executed inside the container over the
-wire, RTK-compressed output round-tripping back correctly.
-
-**Still not called by anything from a real turn, on purpose**: no role's
-`terminal` toolset currently routes a command through this endpoint
-instead of running inside Hermes's own CLI sandbox — that wiring is
-unexplored, separately from the endpoint and the toolchain both now
-existing and working.
-
-## Phase 6: a real Flutter SDK inside agent-runtime
-
-`deploy/agent-runtime/Dockerfile` now clones the `stable` channel to
-`/opt/flutter` and runs `flutter precache --no-android --no-ios` — engine
-artifacts for the host platform only, deliberately skipping the Android
-and iOS toolchains (see below). Found and fixed along the way: the first
-build attempt failed outright because `flutter precache` needs `unzip` to
-extract the Dart SDK, which wasn't in the base image's package list.
-
-Also caught here (at the time, under the old flat `runtime/` layout): the
-image's `COPY` never included the RTK module, so the `/exec` route added
-in the previous pass would have failed to import the moment this image was
-actually built — a gap between "the endpoint's tests pass" and "the
-endpoint works in the image that's supposed to serve it," closed before it
-could surprise anyone. The layered package's `pip install ".[x]"` install
-(see `deploy/agent-runtime/Dockerfile`) plus its import-smoke `RUN` line
-retire this whole bug class structurally — a selectively-missing module
-now fails the build, not the first request.
-
-**Verified live twice**: first a plain `docker run` shell directly against
-the built image — real `flutter create`, `flutter pub get`, `flutter
-analyze` (0 issues), and `flutter test` (the counter smoke test passed)
-against a scratch project, all inside the container, no mocking anywhere
-in that chain. Then the actual intended path end to end: a running
-container, a real HTTP `POST /exec` call from outside it, real `flutter
-create`/`pub get` executed inside, RTK-compressed output coming back
-correctly over the wire.
-
-**Deliberately not done**: Android SDK + JDK. `pub get`/`analyze`/`test`
-don't need them and now work; `flutter build apk` does need both, and
-installing them is a separate, genuinely large download (multiple
-gigabytes) left for its own pass rather than folded into this one.
-
-## Benchmark: does the context/session design actually help?
-
-```bash
-python -m benchmark.run_benchmark
+```yaml
+builder:
+  context_mode: guided
+  toolsets: [skills, terminal, file]
+  skills: [flutter-widgets, dart-testing]   # named Hermes skill files
+  budget:
+    max_input_tokens: 20000
+    max_output_tokens: 6000
 ```
 
-Replays a fixed 9-turn scenario (discovery → planning → product-design →
-architecture, each state gated by an approval) through two paths:
-**ours** (`TurnRunner` — real state machine, real session manager, real
-`ContextBuilder`, `hermes_run` mocked) vs. a **naive Hermes-default**
-(`benchmark/naive_baseline.py` — no orchestrator, no budget, nothing ever
-removed from history). Same human messages, same canned responses, same
-`TokenEstimator` on both sides.
+- `toolsets` — which Hermes tool categories a role gets (`file`,
+  `terminal`, `skills`).
+- `skills` — which named skill files Hermes loads for that role (`--skills`).
+  Leave empty for Hermes's own default selection.
+- `budget` — token ceilings per turn.
 
-Current result (`benchmark/report.md`, regenerated by the command above):
-**40.6% fewer total tokens** — naive grows monotonically because there's
-nothing to bound it, ours resets to a small budgeted rebuild at every
-approval boundary and only ever resends the delta on continuation turns.
-The gap widens with every state the project passes through (0.05x at turn 1
-→ 3.70x by turn 8), which is the point: the win compounds over a project's
-lifetime, not a single turn. It also runs a structural check — handed a
-denylisted artifact, our QA context package refuses to build
-(`DenylistViolation`); a naive prompt has no such mechanism and would
-include it. Both claims are pinned as regression tests in
-`tests/test_benchmark.py`.
+### Session and timeout behavior
 
-**Not yet built:** a `--live` mode driving real Hermes/OpenRouter calls to
-compare actual billed `input_tokens`/`cache_read_tokens`/cost between the
-two paths. The mock above proves what each design *sends*, which is what's
-under our control; a live run would additionally validate the provider's
-own accounting, at the cost of real API spend.
+Same file, top level:
 
-## Phase 2: Telegram
+```yaml
+sessions:
+  max_session_turns: 12
+  max_session_age_minutes: 120
+
+timeouts:
+  hermes_turn_seconds: 600   # raise this if a slower model needs more time
+```
+
+### Personas
+
+`../agentic-workspace/config/souls/<role>.md` — plain markdown, one file
+per role.
+
+### Workflow graph
+
+`../agentic-workspace/config/workflow.yaml` — the state machine itself
+(states, transitions, which are gated by approval). Only touch this if
+you're changing the actual process, not just tuning a role.
+
+## 4. Where things live
+
+| Location | What | Git |
+|---|---|---|
+| `hermes/.env` | Secrets: API key, Telegram token/chat id, workspace path, optional model overrides | gitignored — never commit |
+| `hermes/.env.example` | The same keys, blank/commented | tracked, code repo |
+| `../agentic-workspace/config/*.yaml`, `souls/*.md` | Everything above: models, roles, skills, budgets, workflow, personas | tracked, workspace repo — meant to be pushed |
+| `../agentic-workspace/config/projects.yaml` | Project registry (name → paths) | tracked, workspace repo |
+| `../agentic-workspace/agent-state/` | Generated: turn history, indexes, per-project Hermes memory | gitignored |
+| `../agentic-workspace/projects/` | Your actual project source, if placed there | gitignored — each project keeps its own `.git` |
+
+Secrets stay in the **code repo's** `.env` (gitignored since day one)
+specifically because the workspace repo is meant to be committed and
+pushed. `AGENTIC_WORKSPACE` in `.env` is the one line connecting the two —
+leave it unset and it defaults to the sibling `../agentic-workspace`.
+
+`agentic init-workspace --check` confirms a workspace is found (and
+where), without creating anything — useful as a sanity check or a
+container health-check.
+
+## 5. Everyday commands
 
 ```bash
-export TELEGRAM_BOT_TOKEN=<from @BotFather>
-export TELEGRAM_FORUM_CHAT_ID=<optional -- for CLI-side auto-topic-creation>
-export TELEGRAM_DEFAULT_HOST_ROOT=<optional -- default: /workspace/projects>
+agentic project new <id> --host-path <path>   # register a project
+agentic turn <id> "<message>"                 # send a message
+agentic approve <id> <APPROVAL_TYPE>           # pass a gate
+agentic status <id>                            # workflow state, attempts, session
+agentic init-workspace ../agentic-workspace     # (re)bootstrap a workspace
+agentic init-workspace --check                  # verify resolution, no side effects
+```
+
+Without the installed console script, prefix any of the above with
+`python -m agentic_dev.entrypoints.cli`.
+
+Progress is visible in two places at any point: `agentic status <id>`, or
+the raw event log at
+`../agentic-workspace/agent-state/<id>/events.jsonl`.
+
+## 6. Telegram setup
+
+1. Create a bot via [@BotFather](https://t.me/BotFather); copy the token
+   into `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Create a Telegram group with **Topics (forum mode) enabled**, add the
+   bot as admin with **"Manage Topics"** permission.
+3. Get the chat id: `curl https://api.telegram.org/bot<TOKEN>/getUpdates`
+   after sending any message in the group — look for `"chat":{"id": ...}`.
+   Put it in `.env` as `TELEGRAM_FORUM_CHAT_ID`.
+4. Run the bot:
+
+```bash
 agentic-bot
-# or: python -m agentic_dev.entrypoints.telegram.bot
+# or, via Docker Compose: docker compose up -d
 ```
 
-The bot module lives at `agentic_dev/entrypoints/telegram/bot.py`, not a
-top-level `telegram/` — the plan's original flat-layout name would have
-collided with the installed `python-telegram-bot` package, which imports
-as `telegram`; nesting it under `entrypoints/` (as the layering already
-requires) sidesteps that for free. Caught before it shipped, not after.
+In the group: `/create` starts a new project (asks for a name, creates a
+dedicated topic automatically). `/link <id>` attaches an existing project
+to the current chat/topic instead. `/status` shows workflow state. Plain
+messages in a linked topic are turns; approval gates show up as an inline
+"Approve" button.
 
-`agentic_dev/entrypoints/telegram/bot.py` drives the exact same `TurnRunner` as the CLI, from a
-different entry point:
-
-- **`/create` — new project, new forum topic, both from inside Telegram.**
-  Send `/create` anywhere in a Topics-enabled supergroup (the bot needs
-  "Manage Topics" admin rights there); it asks for a name, then registers
-  the project (default host path via `TELEGRAM_DEFAULT_HOST_ROOT`, since a
-  chat message can't hand over a filesystem path the way `--host-path`
-  does), auto-clears a leading gate state if the workflow has one, creates
-  the topic via `agentic_dev/adapters/telegram/topics.py::create_forum_topic()`
-  (plain synchronous `httpx` against the Bot API — no event loop needed for
-  one REST call), links it, and posts a confirmation *inside the new
-  topic*. A Telegram-side failure (chat not a forum, bot not an admin) is
-  reported but never discards the project it already created.
-- **Same automation from the CLI.** Set `TELEGRAM_FORUM_CHAT_ID` alongside
-  `TELEGRAM_BOT_TOKEN` and `agentic project new` does the same
-  create-topic-and-link step for a project made outside Telegram. Optional
-  either way: with neither env var set, project creation is unchanged.
-- `/link <project_id>` still works for manual linking (or for a topic
-  created by hand) — `agentic_dev/entrypoints/telegram/routing.py`, backed by the same
-  `ProjectRegistry.link_telegram()`. No project-name prefix needed on later
-  messages either way.
-- `/create`, `/link`, `/status` show up as Telegram's own autocomplete
-  suggestions when typing `/` — `agentic_dev/entrypoints/telegram/bot.py`'s `COMMANDS` list is
-  the single source for both `CommandHandler` registration and a
-  `setMyCommands` call in `post_init` (has to run there, not at build time:
-  it's an API call, needs the bot's event loop already up). Verified live
-  against `getMyCommands` directly, across every scope Telegram supports
-  (default, all_group_chats, per-chat, chat_administrators, ...) — only
-  `default` had anything, and it was exactly these three. If the menu looks
-  stale or shows commands from a bot token reused for something else
-  before, that's Telegram's own client-side cache, not the server state —
-  force-closing and reopening the app clears it.
-- Plain text enqueues a `TurnJob` and returns immediately; a single
-  background `inbox_worker` task drains the queue via `asyncio.to_thread`,
-  so a multi-minute Hermes call never blocks the bot's event loop or any
-  other chat. `ProjectStore` requires per-project write serialization
-  ("two writers to one project is a bug, not a case to merge") — one global
-  queue is a safe superset of that.
-- Every response in a state that requires approval gets an inline "Approve"
-  button. Clicking it goes through the same `apply_approval()` the CLI uses
-  (`agentic_dev/app/approval_flow.py`, extracted so both entry points enforce
-  identical §31 semantics), via `resolve_callback()` — which is what makes
-  the plan's own acceptance test possible: **a button referencing a stale
-  artifact revision is rejected**, not silently approved against whatever
-  the project has moved on to.
-
-Tested with fakes for `Update`/`context` (`tests/test_telegram_handlers.py`,
-`tests/test_telegram_routing.py`) — no real Bot API or network call.
-
-### Verified live against a real bot and a real chat
-
-A one-off live-test script (since deleted along with the rest of
-`docker/spike/` — see `docs/adr/0001-layered-package.md`) ran the real bot
-(real long-polling against api.telegram.org, real `/link`, real inline
-button) with `hermes_run` mocked — Hermes itself was already verified live
-in Phase 1; the only new surface here was Telegram, so that's the only
-thing worth spending a real run on. `/link toy` → a plain-text message →
-a real click on the "Approve"
-button all went through, confirmed from `events.jsonl` afterward, not just
-from what Telegram showed on screen:
+## 7. Project structure
 
 ```
-AGENT_TURN_STARTED  (discovery-01, kind: full)
-AGENT_TURN_COMPLETED
-SESSION_OPENED
-AGENT_TURN_STARTED  (discovery-03, kind: delta -- a real continuation turn)
-AGENT_TURN_COMPLETED
-APPROVAL_GRANTED    approver: "telegram:<the tester's real Telegram user id>"
+hermes/                      code repo — pure code
+├── src/agentic_dev/
+│   ├── domain/               pure logic — workflow, sessions, context assembly
+│   ├── ports/                 interfaces (AgentRuntime, CodebaseIndexer)
+│   ├── adapters/              concrete I/O — Hermes, git, storage, Telegram
+│   ├── app/                   use cases — TurnRunner, approval flow
+│   └── entrypoints/            CLI, Telegram bot, HTTP server
+├── deploy/                    Dockerfiles
+├── compose.yaml
+└── tests/
+
+../agentic-workspace/        separate repo — your setup
+├── config/                    models, roles, workflow, souls   (tracked)
+├── agent-state/                generated state                (ignored)
+└── projects/                    your project source            (ignored)
 ```
 
-`session: null` after the approval confirms boundary invalidation fired on
-the real Telegram path, not just in a unit test; the real Telegram user id
-in `approver` confirms the inline button's click genuinely round-tripped
-through `resolve_callback()`.
+Layering rule: imports only ever point downward (`domain → ports →
+adapters → app → entrypoints`), enforced by `tests/test_architecture.py`.
+Full contract: `docs/architecture.md`.
 
-**One real bug the live run found:** `httpx` (python-telegram-bot's HTTP
-client) logs the full request URL at `INFO`, and every Bot API URL embeds
-the token (`api.telegram.org/bot<TOKEN>/getMe`) — so `logging.basicConfig
-(level=logging.INFO)` alone leaks the token into any log output. Found the
-hard way on the first run. **Fixed** in both
-`agentic_dev/entrypoints/telegram/bot.py` and the (since-deleted) live-test
-script: `logging.getLogger("httpx").setLevel(logging.WARNING)` right after
-configuring root logging, unconditionally.
+## 8. Testing
 
-**`/create` verified live too**, same script, real Bot API: `/create` →
-typed a name in reply → a real forum topic appeared in the group, the
-project's `state.yaml` showed `workflow_state: discovery` (the leading
-`backlog` gate auto-cleared, `approver: "telegram:<real user id>"`), and a
-follow-up plain-text message plus an "Approve" click both went through
-inside the newly created topic — the whole loop, starting from a chat
-message and ending with a working, linked project, with no CLI step at
-all.
+```bash
+pytest
+```
+
+344 tests, no network calls, no cost — everything real (Hermes CLI, git,
+Docker, HTTP) is either mocked or exercised in an isolated integration
+test. This suite is the actual specification of the system's invariants.
+
+## Troubleshooting
+
+- **Git Bash on Windows mangles paths.** `docker compose run ... --host-path
+  /workspace/...` gets rewritten into a Windows path by MSYS before Docker
+  ever sees it. Fix: prefix with `MSYS_NO_PATHCONV=1`.
+- **A model override in `.env` has no effect.** Confirm the line is
+  uncommented and matches the exact role name in `models.yaml` (e.g.
+  `BUILDER_MODEL`, not `BUILD_MODEL`).
+- **"No workspace found."** Run `agentic init-workspace ../agentic-workspace`,
+  or set `AGENTIC_WORKSPACE` in `.env` to wherever you put it.
+  `agentic init-workspace --check` tells you exactly what was resolved.
+- **Telegram `/create` fails to make a topic.** The group needs Topics
+  (forum mode) enabled, and the bot needs "Manage Topics" admin rights.
+  The project is still created either way — link it manually with `/link`.
+- **A turn does nothing / no LLM was called.** Check `OPENROUTER_API_KEY`
+  is actually set in the environment the process sees (`export $(grep -v
+  '^#' .env | xargs)` for the CLI; `docker compose up` reads `.env`
+  automatically for Docker).
+
+## Learn more
+
+- `docs/architecture.md` — the layering contract, in full
+- `docs/adr/0001-layered-package.md` — why the code/workspace split exists
+- `docs/plan.md` — original design brief and rationale
+- `docs/progress.md` — phase-by-phase build checklist, what's done vs. spec

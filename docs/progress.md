@@ -412,9 +412,10 @@ the time, not a description of the current tree. What's true now:
       module named in the phase entries above by its old flat path
       (`orchestrator/jobs.py`, `runtime/hermes.py`, `telegram_bot/topics.py`,
       `indexing/dart_adapter.py`, ...) moved to the equivalent layered
-      location -- see `README.md`'s "What's implemented" table for the
-      current path of each, and `docs/architecture.md` for the layering
-      contract itself.
+      location under `src/agentic_dev/{domain,ports,adapters,app,
+      entrypoints}/` -- see `docs/architecture.md` for the layering
+      contract itself, and this file's own phase entries below for each
+      module's old vs. new path.
 - [x] **The one real import cycle is gone.** `orchestrator/cli.py`
       importing `telegram_bot.topics` doesn't exist anymore -- the
       Telegram topic adapter moved to `adapters/telegram/topics.py`, a
