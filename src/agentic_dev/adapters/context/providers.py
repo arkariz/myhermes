@@ -19,6 +19,7 @@ from pathlib import Path
 from ..storage.store import ProjectStore
 from ...domain.context.budget import ContextItem
 from ...domain.context.builder import BuildRequest
+from ...domain.context.denylist import ContextPolicy
 
 
 class RoleSoulProvider:
@@ -124,6 +125,74 @@ class ArtifactSectionProvider:
             reason="current working artifact",
             content=path.read_text(encoding="utf-8"),
         )]
+
+
+class FoundationalDocsProvider:
+    """`prd.md` / `architecture.md` / `onboarding-report.md` -- embedded by
+    CONTENT for guided-mode roles specifically (builder/reviewer/qa,
+    auditor), regardless of whether the current state declares one of them
+    as `state.artifact` (implementation/review/qa never do -- they have no
+    "current working artifact" of their own, just foundational documents
+    written earlier that this task is built against).
+
+    Found live, the hard way: a guided-mode role's own cwd is
+    `project_source_root` (turn_runner.py::_hermes_cwd), not
+    `store.root` -- the tree `ProjectStore.artifact()` actually writes
+    to. A soul telling the model to "read architecture.md" with its own
+    file tool can never find it there; it lives in a completely different
+    directory tree. `ArtifactSectionProvider` alone doesn't cover this
+    gap either -- it only ever embeds the CURRENT state's own artifact,
+    and implementation/review/qa don't have one. Without this, a guided
+    role has no way to see the PRD/tech plan at all except by hallucinating
+    plausible-sounding content, which is exactly what happened.
+
+    `onboarding-report.md` closes the equivalent gap for an imported
+    project (config/workflow.yaml's `onboarding` state -> auditor):
+    there's no `artifacts/prd.md`/`architecture.md` at all for a project
+    that skipped planning/architecture, but the report's own prose names
+    where the project's REAL docs live inside the project source tree --
+    which a guided role's own file tool genuinely CAN reach, because
+    guided cwd IS project_source_root. The report is what tells it to
+    look there at all.
+
+    `denylist` is the role's own `context_denylist` (e.g. qa's, which
+    forbids `artifacts/architecture.md` on purpose -- a correctness
+    invariant, see domain/context/denylist.py). Checked here, BEFORE a
+    candidate is even proposed, deliberately -- ContextPolicy.check()
+    treats a denylisted item as a hard failure that fails the whole turn,
+    which is correct for every OTHER provider (none of them should ever
+    be capable of producing one for a role that forbids it) but wrong
+    for this one: this content is legitimately optional per role, so it
+    degrades to "nothing offered" instead of crashing a turn that would
+    otherwise run fine without it. Found live: qa's own architecture.md
+    denylist made every qa turn fail the moment this provider unfiltered
+    started proposing exactly what qa is configured to never see.
+    """
+
+    name = "foundational_docs"
+    _DOC_NAMES = ("prd.md", "architecture.md", "onboarding-report.md")
+
+    def __init__(self, store: ProjectStore, *, denylist: tuple[str, ...] = ()):
+        self.store = store
+        self._policy = ContextPolicy(role="", denylist=denylist)
+
+    def collect(self, request: BuildRequest) -> list[ContextItem]:
+        items = []
+        for doc_name in self._DOC_NAMES:
+            if doc_name == request.artifact_name:
+                continue  # ArtifactSectionProvider already covers this one
+            key = f"artifacts/{doc_name}"
+            if not self._policy.permitted(key):
+                continue
+            path = self.store.artifact(doc_name)
+            if not path.exists():
+                continue
+            items.append(ContextItem(
+                key=key, layer=1, priority=2, volatility=1,
+                reason="foundational reference -- what this task is built against",
+                content=path.read_text(encoding="utf-8"),
+            ))
+        return items
 
 
 class DecisionsProvider:

@@ -36,6 +36,7 @@ from ..adapters.context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
     DiffProvider,
+    FoundationalDocsProvider,
     IndexProvider,
     ProjectIdentityProvider,
     RecentTurnsProvider,
@@ -276,6 +277,20 @@ class TurnRunner:
             # own tools -- an assembled-mode role (planner, architect) has
             # no toolset to act on a bare path list with.
             providers.append(IndexProvider(self.store, project_source_root=self.project_source_root))
+            # Guided cwd is project_source_root, not store.root -- see
+            # FoundationalDocsProvider's own docstring for why prd.md/
+            # architecture.md need to be embedded here rather than left
+            # for the role's own file tool to find (it can't; they live in
+            # a different tree entirely). role_cfg.denylist is threaded in
+            # so the provider can quietly skip a doc a role is blocked
+            # from (qa's own architecture.md denylist, a correctness
+            # invariant) BEFORE proposing it -- ContextPolicy.check()
+            # below treats a denylisted item as a hard failure, by design,
+            # for every OTHER provider that's never supposed to produce
+            # one; this is the one provider whose foundational content is
+            # legitimately optional per role, so it degrades instead of
+            # crashing the turn.
+            providers.append(FoundationalDocsProvider(self.store, denylist=role_cfg.denylist))
         if role in ("reviewer", "qa"):
             # Diff-aware context (docs/plan.md Phase 5): the builder's real
             # changes to the project source, not nothing. Builder itself

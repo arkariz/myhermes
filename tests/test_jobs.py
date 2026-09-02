@@ -702,6 +702,52 @@ def review_runner(tmp_path):
     )
 
 
+def test_builder_gets_architecture_and_prd_content_even_though_its_cwd_is_the_project_source(
+    monkeypatch, review_runner,
+):
+    # Regression test for a real bug found live: builder's own cwd is
+    # project_source_root, not store.root -- where artifacts/ actually
+    # lives -- so its soul telling it to "read architecture.md" with its
+    # own file tool could never find it. Without FoundationalDocsProvider,
+    # the rendered prompt has no PRD/architecture content anywhere, and
+    # the model hallucinated a plausible-sounding investigation instead
+    # of admitting it had nothing real to go on.
+    review_runner.store.artifact("prd.md").parent.mkdir(parents=True, exist_ok=True)
+    review_runner.store.artifact("prd.md").write_text(
+        "# PRD\n\nBuild a real feature.", encoding="utf-8",
+    )
+    review_runner.store.artifact("architecture.md").write_text(
+        "# Architecture\n\nUse a single Dart file.", encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
+
+    outcome = review_runner.run_turn("build it")
+
+    prompt = review_runner.store.read_turn_artifact(outcome.turn_id, "prompt.md")
+    assert "Build a real feature." in prompt
+    assert "Use a single Dart file." in prompt
+
+
+def test_builder_gets_onboarding_report_when_prd_and_architecture_do_not_exist(
+    monkeypatch, review_runner,
+):
+    # The imported-project case: no artifacts/prd.md or architecture.md at
+    # all (planning/architecture were skipped), but onboarding-report.md
+    # exists and names where the project's REAL docs live -- which the
+    # builder genuinely can reach with its own tools, because its cwd IS
+    # the project source tree.
+    review_runner.store.artifact("onboarding-report.md").parent.mkdir(parents=True, exist_ok=True)
+    review_runner.store.artifact("onboarding-report.md").write_text(
+        "# Onboarding Report\n\nReal PRD lives at docs/real-prd.md.", encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
+
+    outcome = review_runner.run_turn("build it")
+
+    prompt = review_runner.store.read_turn_artifact(outcome.turn_id, "prompt.md")
+    assert "Real PRD lives at docs/real-prd.md." in prompt
+
+
 def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch, review_runner):
     from agentic_dev.adapters.git.project import current_revision
 
@@ -712,6 +758,59 @@ def test_implementation_state_captures_a_base_revision_on_first_turn(monkeypatch
     assert review_runner.store.read_state()["implementation_base_revision"] == (
         current_revision(review_runner.project_source_root)
     )
+
+
+def test_foundational_docs_still_respect_qas_denylist(monkeypatch, tmp_path):
+    # The critical property: FoundationalDocsProvider's items go through
+    # the exact same ContextPolicy every other provider's items do --
+    # qa's existing architecture.md denylist (a correctness invariant,
+    # not a preference -- domain/context/denylist.py) must still hold
+    # even though this new provider can now produce that key.
+    (tmp_path / "workflow.yaml").write_text("""
+initial: qa
+states:
+  qa: {kind: autonomous, role: qa, max_attempts: 2, on_failure: blocked, next: done}
+  done: {kind: terminal}
+  blocked: {kind: terminal, recoverable: true}
+""")
+    (tmp_path / "agents.yaml").write_text("""
+defaults: {toolsets: [skills], context_mode: assembled}
+roles:
+  qa:
+    context_mode: guided
+    toolsets: [terminal]
+    budget: {max_input_tokens: 20000, max_output_tokens: 6000}
+    read_budget: {max_files: 10, max_bytes: 10000, max_tool_calls: 20}
+    context_denylist: [artifacts/architecture.md]
+    denylist_reason: "QA must not see the technical plan."
+""")
+    (tmp_path / "models.yaml").write_text("""
+routing:
+  qa: {provider: openrouter, model: openai/gpt-4o-mini}
+""")
+    (tmp_path / "souls").mkdir()
+
+    project = tmp_path / "source"
+    project.mkdir()
+    _git_repo(project)
+
+    runner = TurnRunner(
+        project_id="toy", store=ProjectStore(tmp_path / "agent-state"),
+        workflow=WorkflowDefinition.load(tmp_path / "workflow.yaml"),
+        agents=AgentsConfig.load(tmp_path / "agents.yaml"),
+        models=ModelsConfig.load(tmp_path / "models.yaml", env={}),
+        souls_dir=str(tmp_path / "souls"), project_source_root=project,
+    )
+    runner.store.artifact("architecture.md").parent.mkdir(parents=True, exist_ok=True)
+    runner.store.artifact("architecture.md").write_text(
+        "# Architecture\n\nSECRET_TECH_PLAN_CONTENT", encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_runtime_module, "hermes_run", fake_success())
+
+    outcome = runner.run_turn("check it")
+
+    prompt = runner.store.read_turn_artifact(outcome.turn_id, "prompt.md")
+    assert "SECRET_TECH_PLAN_CONTENT" not in prompt
 
 
 def test_landing_directly_in_qa_still_captures_a_base_revision(monkeypatch, tmp_path):

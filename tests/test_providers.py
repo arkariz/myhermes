@@ -11,6 +11,7 @@ from agentic_dev.adapters.context.providers import (
     ArtifactSectionProvider,
     DecisionsProvider,
     DiffProvider,
+    FoundationalDocsProvider,
     IndexProvider,
     ProjectIdentityProvider,
     ReferencedFilesProvider,
@@ -106,6 +107,58 @@ def test_artifact_provider_still_names_the_target_path_before_it_exists(tmp_path
     assert items[0].key == "artifacts/prd.md"
     assert items[0].is_reference  # no content to embed, just the path
     assert "not created yet" in items[0].reason
+
+
+# ---- FoundationalDocsProvider -----------------------------------------------
+
+
+def test_foundational_docs_embeds_prd_and_architecture_when_both_exist(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.artifact("prd.md").parent.mkdir(parents=True, exist_ok=True)
+    store.artifact("prd.md").write_text("# PRD content", encoding="utf-8")
+    store.artifact("architecture.md").write_text("# Architecture content", encoding="utf-8")
+
+    items = FoundationalDocsProvider(store).collect(make_request(role="builder", mode="guided"))
+
+    by_key = {i.key: i for i in items}
+    assert by_key["artifacts/prd.md"].content == "# PRD content"
+    assert by_key["artifacts/architecture.md"].content == "# Architecture content"
+
+
+def test_foundational_docs_embeds_onboarding_report_when_it_exists(tmp_path):
+    store = ProjectStore(tmp_path)
+    store.artifact("onboarding-report.md").parent.mkdir(parents=True, exist_ok=True)
+    store.artifact("onboarding-report.md").write_text("# Audit findings", encoding="utf-8")
+
+    items = FoundationalDocsProvider(store).collect(make_request(role="builder", mode="guided"))
+
+    assert len(items) == 1
+    assert items[0].key == "artifacts/onboarding-report.md"
+    assert items[0].content == "# Audit findings"
+
+
+def test_foundational_docs_returns_nothing_when_none_of_the_three_exist(tmp_path):
+    store = ProjectStore(tmp_path)
+    items = FoundationalDocsProvider(store).collect(make_request(role="builder", mode="guided"))
+    assert items == []
+
+
+def test_foundational_docs_skips_the_current_states_own_artifact(tmp_path):
+    # Avoid double-embedding: if the CURRENT state's own artifact happens
+    # to be one of these three names, ArtifactSectionProvider already
+    # covers it -- FoundationalDocsProvider must not also emit it.
+    store = ProjectStore(tmp_path)
+    store.artifact("prd.md").parent.mkdir(parents=True, exist_ok=True)
+    store.artifact("prd.md").write_text("# PRD content", encoding="utf-8")
+    store.artifact("architecture.md").write_text("# Architecture content", encoding="utf-8")
+
+    items = FoundationalDocsProvider(store).collect(
+        make_request(role="architect", mode="assembled", artifact_name="architecture.md")
+    )
+
+    keys = [i.key for i in items]
+    assert "artifacts/architecture.md" not in keys
+    assert "artifacts/prd.md" in keys
 
 
 # ---- DecisionsProvider -------------------------------------------------
