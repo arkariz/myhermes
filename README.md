@@ -13,70 +13,54 @@ is just: get it running, configure it, use it.
 
 ## 1. Prerequisites
 
-- **Python 3.11+** (for the CLI/local path) — or **Docker Desktop** (for
-  the full container topology + Telegram)
+- **Docker Desktop**
 - **git**
 - **An LLM API key.** Defaults to [OpenRouter](https://openrouter.ai/) —
-  any provider Hermes supports works, just change `models.yaml` (see
-  [Configuration](#3-configuration)).
-- **The [Hermes CLI](https://hermes-agent.nousresearch.com)**, if running
-  outside Docker. The `agent-runtime` Docker image already includes it.
+  any provider Hermes supports works (see [Configuration](#3-configuration)).
+
+The Hermes CLI and Flutter SDK are already built into the Docker images —
+nothing else to install.
 
 ## 2. Quick start
 
-Two setup steps, then two paths depending on whether you want Telegram.
-
-### Step 1 — install and bootstrap a workspace
-
 ```bash
-pip install -e ".[dev]"
-agentic init-workspace ../agentic-workspace
-```
-
-This creates a **separate sibling repo**, `../agentic-workspace`, holding
-your config, generated state, and project registry — kept out of this code
-repo on purpose (see [Where things live](#4-where-things-live)). Run this
-once per machine.
-
-### Step 2 — add your API key
-
-```bash
+git clone <this repo> hermes && cd hermes
 cp .env.example .env
 ```
 
 Open `.env` and fill in `OPENROUTER_API_KEY`. That's the only required
-value — everything else is optional.
-
-### Path A — CLI only, no Docker, no Telegram (fastest)
-
-```bash
-export $(grep -v '^#' .env | xargs)   # loads .env into your shell
-agentic project new toy --host-path /path/to/a/real/project
-agentic turn toy "Build a habit tracker for one user."
-agentic status toy
-```
-
-`--host-path` points at a real project on your machine — a Flutter/Dart
-project gets the most out of this (codebase indexing, diff-aware review),
-but any git repo works. From here the workflow drives itself: answer the
-planner's questions with `agentic turn toy "..."`, approve gates with
-`agentic approve toy <TYPE>`, check progress with `agentic status toy`.
-
-### Path B — Docker Compose, full topology + Telegram
+value.
 
 ```bash
 docker compose build
+docker compose run --rm orchestrator agentic init-workspace /workspace
 docker compose up -d
 ```
 
-Both containers mount `../agentic-workspace` at `/workspace`. Use
-`--host-path /workspace/projects/<name>` for a project created via the
-CLI, or use `/create` from Telegram (see [Telegram setup](#6-telegram-setup)).
+`init-workspace` creates a **separate sibling repo**, `../agentic-workspace`
+(bind-mounted into both containers at `/workspace`), holding your config,
+generated state, and project registry — kept out of this code repo on
+purpose (see [Where things live](#4-where-things-live)). Run it once per
+machine.
+
+> **Windows + Git Bash:** prefix every `docker compose run`/`docker run`
+> command with `MSYS_NO_PATHCONV=1` — Git Bash otherwise rewrites
+> container paths like `/workspace` into a Windows path before Docker
+> sees them. Not needed on macOS/Linux, or PowerShell.
+
+Register a project and drive it:
 
 ```bash
+docker compose run --rm orchestrator agentic project new toy --host-path /workspace/projects/toy
+docker compose run --rm orchestrator agentic turn toy "Build a habit tracker for one user."
+docker compose run --rm orchestrator agentic status toy
 docker compose logs -f orchestrator   # watch turns, approvals, Telegram activity
-docker compose run --rm orchestrator agentic status toy   # one-off CLI command against the running stack
 ```
+
+`--host-path` points at a project's source tree — a Flutter/Dart project
+gets the most out of this (codebase indexing, diff-aware review), but any
+git repo works. Or skip the CLI entirely and drive it from Telegram — see
+[Telegram setup](#6-telegram-setup).
 
 ## 3. Configuration
 
@@ -89,21 +73,21 @@ Everything behavior-related lives in `../agentic-workspace/config/` —
 
 ### Which model each role uses
 
-`../agentic-workspace/config/models.yaml`:
-
-```yaml
-routing:
-  builder:
-    provider: openrouter
-    model: ${BUILDER_MODEL:-deepseek/deepseek-v3}
-```
-
-Either edit the default directly, or override per-role from `.env` without
-touching the file — uncomment the matching line in `.env.example`:
+Set it in `.env` — uncomment the role you want to change:
 
 ```bash
-BUILDER_MODEL=anthropic/claude-sonnet-4.6
+PLANNER_MODEL=anthropic/claude-sonnet-4.6
+DESIGNER_MODEL=anthropic/claude-sonnet-4.6
+ARCHITECT_MODEL=anthropic/claude-sonnet-4.6
+BUILDER_MODEL=deepseek/deepseek-v3
+REVIEWER_MODEL=deepseek/deepseek-v3
+QA_MODEL=deepseek/deepseek-v3
+SUMMARIZER_MODEL=deepseek/deepseek-v3
 ```
+
+Leave a line commented out to keep that role's shipped default. Restart
+the stack (`docker compose up -d`) after changing `.env` for it to take
+effect.
 
 ### Skills, toolsets, and budgets per role
 
@@ -171,17 +155,15 @@ container health-check.
 
 ## 5. Everyday commands
 
+Run any of these as `docker compose run --rm orchestrator <command>`:
+
 ```bash
-agentic project new <id> --host-path <path>   # register a project
+agentic project new <id> --host-path /workspace/projects/<id>   # register a project
 agentic turn <id> "<message>"                 # send a message
 agentic approve <id> <APPROVAL_TYPE>           # pass a gate
 agentic status <id>                            # workflow state, attempts, session
-agentic init-workspace ../agentic-workspace     # (re)bootstrap a workspace
-agentic init-workspace --check                  # verify resolution, no side effects
+agentic init-workspace --check                  # confirm the workspace is found, no side effects
 ```
-
-Without the installed console script, prefix any of the above with
-`python -m agentic_dev.entrypoints.cli`.
 
 Progress is visible in two places at any point: `agentic status <id>`, or
 the raw event log at
@@ -196,11 +178,10 @@ the raw event log at
 3. Get the chat id: `curl https://api.telegram.org/bot<TOKEN>/getUpdates`
    after sending any message in the group — look for `"chat":{"id": ...}`.
    Put it in `.env` as `TELEGRAM_FORUM_CHAT_ID`.
-4. Run the bot:
+4. Run the bot — it starts automatically with the rest of the stack:
 
 ```bash
-agentic-bot
-# or, via Docker Compose: docker compose up -d
+docker compose up -d
 ```
 
 In the group: `/create` starts a new project (asks for a name, creates a
@@ -235,6 +216,9 @@ Full contract: `docs/architecture.md`.
 
 ## 8. Testing
 
+For contributors, not needed to just run the system. Requires a local
+Python 3.11+ install (`pip install -e ".[dev]"`):
+
 ```bash
 pytest
 ```
@@ -245,22 +229,23 @@ test. This suite is the actual specification of the system's invariants.
 
 ## Troubleshooting
 
-- **Git Bash on Windows mangles paths.** `docker compose run ... --host-path
-  /workspace/...` gets rewritten into a Windows path by MSYS before Docker
-  ever sees it. Fix: prefix with `MSYS_NO_PATHCONV=1`.
+- **A command with a `/workspace/...` argument fails or does something
+  strange on Windows.** Git Bash rewrote it into a Windows path — prefix
+  the command with `MSYS_NO_PATHCONV=1` (see the note in
+  [Quick start](#2-quick-start)).
 - **A model override in `.env` has no effect.** Confirm the line is
-  uncommented and matches the exact role name in `models.yaml` (e.g.
-  `BUILDER_MODEL`, not `BUILD_MODEL`).
-- **"No workspace found."** Run `agentic init-workspace ../agentic-workspace`,
-  or set `AGENTIC_WORKSPACE` in `.env` to wherever you put it.
-  `agentic init-workspace --check` tells you exactly what was resolved.
+  uncommented and spelled exactly (e.g. `BUILDER_MODEL`, not
+  `BUILD_MODEL`), then `docker compose up -d` again to pick it up.
+- **"No workspace found."** Run `docker compose run --rm orchestrator
+  agentic init-workspace --check` to see exactly what was resolved, or
+  confirm `../agentic-workspace` exists next to this repo (or that
+  `AGENTIC_WORKSPACE` in `.env` points at it).
 - **Telegram `/create` fails to make a topic.** The group needs Topics
   (forum mode) enabled, and the bot needs "Manage Topics" admin rights.
   The project is still created either way — link it manually with `/link`.
 - **A turn does nothing / no LLM was called.** Check `OPENROUTER_API_KEY`
-  is actually set in the environment the process sees (`export $(grep -v
-  '^#' .env | xargs)` for the CLI; `docker compose up` reads `.env`
-  automatically for Docker).
+  is actually set in `.env` — `docker compose up -d` (rebuild not needed
+  for an env-only change, just a restart) picks it up.
 
 ## Learn more
 
