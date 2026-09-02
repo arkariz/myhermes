@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # setMyCommands in _post_init) -- one list can't drift from the other.
 COMMANDS = [
     ("create", "Create a new project and its Telegram topic", handlers.cmd_create),
+    ("import", "Import an existing project from a GitHub repo", handlers.cmd_import),
     ("link", "Link this chat/topic to an existing project", handlers.cmd_link),
     ("status", "Show a project's current workflow state", handlers.cmd_status),
 ]
@@ -63,6 +64,7 @@ def build_application(token: str, *, config_dir: Path | None = None) -> Applicat
     app.bot_data["inbox"] = asyncio.Queue()
     app.bot_data["callback_table"] = {}  # token -> handlers.CallbackPayload
     app.bot_data["pending_create"] = {}  # (chat_id, thread_id) -> awaiting a /create name
+    app.bot_data["pending_import"] = {}  # (chat_id, thread_id) -> awaiting an /import URL
 
     for cmd, _desc, handler_fn in COMMANDS:
         app.add_handler(CommandHandler(cmd, handler_fn))

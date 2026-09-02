@@ -14,7 +14,34 @@ from __future__ import annotations
 
 from ..adapters.registry import ProjectEntry, ProjectRegistry
 from ..adapters.storage.store import ProjectStore
-from ..domain.workflow import WorkflowDefinition
+from ..domain.workflow import State, WorkflowDefinition
+
+# config/workflow.yaml's two conventional `backlog` approval types --
+# named here, once, rather than as a string literal repeated at every
+# call site (entrypoints/cli.py's --import, entrypoints/telegram/
+# handlers.py's plain /create and /import both need exactly these).
+START_PROJECT_APPROVAL = "START_PROJECT"
+IMPORT_PROJECT_APPROVAL = "IMPORT_PROJECT"
+
+
+def leading_gate_approval_type(state: State) -> str | None:
+    """Which approval clears `state` (normally `workflow.initial`,
+    i.e. `backlog`) on the ordinary "start a new project" path.
+
+    Old-style single `approval_type` states return it directly. A
+    State.next_by_approval state (backlog now has two: START_PROJECT and
+    IMPORT_PROJECT) returns START_PROJECT specifically IF it's one of the
+    declared options -- never guesses at some other key. None means "don't
+    auto-clear this gate", which is the honest answer for a workflow whose
+    leading gate doesn't use either convention; the caller then leaves it
+    for a human to `/approve` explicitly rather than firing the wrong
+    typed event.
+    """
+    if state.approval_type:
+        return state.approval_type
+    if state.next_by_approval and START_PROJECT_APPROVAL in state.next_by_approval:
+        return START_PROJECT_APPROVAL
+    return None
 
 
 def create_project(

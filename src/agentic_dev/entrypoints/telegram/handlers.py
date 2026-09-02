@@ -33,10 +33,11 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes
 
+from ...adapters.git.project import InvalidRepositoryUrl, ProjectGitError, clone, repo_name_from_url
 from ...adapters.indexing.dart import DartAnalyzerIndexer
 from ...adapters.indexing.remote import RemoteIndexer
 from ...app.approval_flow import apply_approval, default_continuation_message
-from ...app.project_creation import create_project
+from ...app.project_creation import IMPORT_PROJECT_APPROVAL, create_project, leading_gate_approval_type
 from ...domain.approvals import ApprovalError
 from ...domain.roles import AgentsConfig, ModelsConfig
 from ...app.turn_runner import TurnBlocked, TurnRunner
@@ -52,6 +53,13 @@ from ...adapters.telegram.topics import ForumTopicError, create_forum_topic
 logger = logging.getLogger(__name__)
 
 _PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+# Loose on purpose -- this only has to FIND a github.com URL inside a
+# human's free-text message ("here's my repo: https://github.com/a/b, can
+# you take a look"), not validate it. The real, strict check is
+# adapters/git/project.py::GITHUB_HTTPS_RE, applied to whatever this
+# extracts before it's ever used for anything.
+_GITHUB_URL_SEARCH_RE = re.compile(r"https://github\.com/\S+")
 
 
 def _default_host_root() -> Path:
@@ -217,15 +225,20 @@ async def _create_project_from_chat(
     )
 
     # Only auto-clear a leading gate (config/workflow.yaml's real `backlog`
-    # state, guarding with START_PROJECT) -- not hardcoded to that name, so
-    # a workflow whose initial state runs an agent directly isn't force-fed
-    # an approval type it never declared.
+    # state) on the conventional "start a new project" approval -- not
+    # hardcoded to a single fixed approval_type, since backlog now offers
+    # two (START_PROJECT and IMPORT_PROJECT, see State.next_by_approval);
+    # leading_gate_approval_type() picks START_PROJECT specifically for
+    # THIS (plain /create) flow, or returns None for a workflow whose
+    # leading gate doesn't use either convention -- never guesses wrong.
     initial_state = workflow.get(workflow.initial)
     if initial_state.kind is StateKind.GATE:
-        apply_approval(
-            store, workflow, initial_state.approval_type,
-            approver=f"telegram:{update.effective_user.id}",
-        )
+        approval_type = leading_gate_approval_type(initial_state)
+        if approval_type:
+            apply_approval(
+                store, workflow, approval_type,
+                approver=f"telegram:{update.effective_user.id}",
+            )
 
     await update.message.reply_text(
         f"Created {name!r} at {host_path} -- now at state "
@@ -249,15 +262,149 @@ async def _create_project_from_chat(
     )
 
 
+# ---- /import: an existing project from a GitHub repo -----------------------
+
+
+async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/import [url] -- the onboarding counterpart to /create, for a
+    project that already exists somewhere on GitHub. `/import <url>` in
+    one shot works (unlike /create, a URL is naturally one argument, not
+    something worth a follow-up question); bare `/import` falls back to
+    asking for it, same two-step shape /create already uses.
+
+    A bare https://github.com/<owner>/<repo> URL pasted with NO command at
+    all also triggers this (see handle_message) -- the primary way this
+    is meant to be used: paste the link, onboarding starts.
+    """
+    args = context.args or []
+    if args:
+        await _import_project_from_chat(update, context, args[0])
+        return
+
+    key = (update.effective_chat.id, update.message.message_thread_id)
+    context.bot_data["pending_import"][key] = True
+    await update.message.reply_text(
+        "Send the GitHub repository URL to import "
+        "(https://github.com/<owner>/<repo>)."
+    )
+
+
+async def _import_project_from_chat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str,
+) -> None:
+    match = _GITHUB_URL_SEARCH_RE.search(text)
+    if not match:
+        await update.message.reply_text(
+            "That doesn't look like a GitHub URL -- expected "
+            "https://github.com/<owner>/<repo>. Run /import again to retry."
+        )
+        return
+    url = match.group(0)
+
+    try:
+        name = repo_name_from_url(url)
+    except InvalidRepositoryUrl as exc:
+        await update.message.reply_text(f"Can't import that URL: {exc}")
+        return
+
+    registry = context.bot_data["registry"]
+    try:
+        registry.get(name)
+    except ProjectNotFound:
+        pass
+    else:
+        await update.message.reply_text(
+            f"A project named {name!r} already exists -- rename or remove "
+            f"the old one first."
+        )
+        return
+
+    await update.message.reply_text(f"Cloning {url}...")
+    host_path = _default_host_root() / name
+    try:
+        # A real network call -- off the event loop like every Hermes
+        # call already is (module docstring, brief S24), for the same
+        # reason: it must not hold up every other chat's updates while it
+        # runs.
+        await asyncio.to_thread(clone, url, host_path)
+    except (InvalidRepositoryUrl, ProjectGitError) as exc:
+        await update.message.reply_text(f"Couldn't clone that repository: {exc}")
+        return
+
+    config_dir = _config_dir(context.bot_data)
+    workflow = WorkflowDefinition.load(config_dir / "workflow.yaml")
+    state_path = host_path.parent / ".agentic-dev" / name
+    _entry, store = create_project(
+        registry, name=name, host_path=str(host_path), state_path=str(state_path),
+        workflow=workflow,
+    )
+    approver = f"telegram:{update.effective_user.id}"
+    try:
+        next_state = apply_approval(store, workflow, IMPORT_PROJECT_APPROVAL, approver=approver)
+    except (ApprovalError, WorkflowError) as exc:
+        # The shipped workflow.yaml always declares IMPORT_PROJECT on
+        # backlog -- this only fires for a customized workflow that
+        # dropped it, which /import can't do anything sensible about.
+        await update.message.reply_text(
+            f"Cloned, but this workflow doesn't support importing "
+            f"({exc}). Registered as {name!r}; use /link to drive it "
+            f"manually if that's still useful."
+        )
+        return
+
+    await update.message.reply_text(
+        f"Imported {name!r} at {host_path} -- now at state {next_state!r}."
+    )
+
+    chat_id = update.effective_chat.id
+    try:
+        thread_id = create_forum_topic(context.bot.token, chat_id, name)
+    except ForumTopicError as exc:
+        await update.message.reply_text(
+            f"Project imported, but couldn't create a forum topic ({exc}). "
+            f"Use /link {name} in a chat/topic to drive it manually instead."
+        )
+        return
+
+    registry.link_telegram(name, chat_id=chat_id, thread_id=thread_id)
+    await context.bot.send_message(
+        chat_id=chat_id, message_thread_id=thread_id,
+        text=f"This topic now drives project {name!r}.",
+    )
+
+    # Unlike a brand-new project's first (discovery) turn, onboarding's
+    # first turn needs no human-supplied content -- the auditor just
+    # explores on its own. Auto-continue the same way an ordinary approval
+    # does: enqueued on the shared job queue, never run inline (a Hermes
+    # call can take minutes; see the module docstring's own reasoning for
+    # why handle_message never blocks on one either). Guarded by
+    # runs_agent the same way cli.py's _approve_and_continue is, in case a
+    # customized workflow routes IMPORT_PROJECT somewhere that doesn't run
+    # an agent at all.
+    next_state_obj = workflow.get(next_state)
+    if next_state_obj.runs_agent:
+        message = default_continuation_message(IMPORT_PROJECT_APPROVAL, next_state)
+        job = TurnJob(project_id=name, chat_id=chat_id, thread_id=thread_id, human_message=message)
+        await context.bot_data["inbox"].put(job)
+
+
 # ---- plain-text turns -------------------------------------------------------
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     key = (update.effective_chat.id, update.message.message_thread_id)
+    text = update.message.text.strip()
+
     pending_create = context.bot_data["pending_create"]
     if key in pending_create:
         del pending_create[key]
-        await _create_project_from_chat(update, context, update.message.text.strip())
+        await _create_project_from_chat(update, context, text)
+        return
+
+    pending_import = context.bot_data["pending_import"]
+    if key in pending_import:
+        del pending_import[key]
+        await _import_project_from_chat(update, context, text)
         return
 
     registry = context.bot_data["registry"]
@@ -265,6 +412,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         entry = resolve_project(registry, chat_id=update.effective_chat.id, thread_id=thread_id)
     except RoutingError as exc:
+        # Nothing is linked here yet -- a bare GitHub URL is the primary,
+        # command-free way importing an existing project is meant to
+        # work: paste the link, onboarding starts. An ALREADY-linked
+        # chat/topic never reaches this branch, so a URL pasted mid-
+        # conversation there is just ordinary turn content, never
+        # hijacked into a new import.
+        if _GITHUB_URL_SEARCH_RE.search(text):
+            await _import_project_from_chat(update, context, text)
+            return
         await update.message.reply_text(str(exc))
         return
 
@@ -360,14 +516,26 @@ async def _process_turn_job(app: Application, job: TurnJob) -> None:
     # this, after a turn failed on a rate-limited free-tier model.
     reply_markup = None
     if not outcome.failed and state.requires_approval and state.runs_agent:
-        token = secrets.token_hex(4)
-        app.bot_data["callback_table"][token] = CallbackPayload(
-            project_id=job.project_id, approval_type=state.approval_type,
-            artifact_revision=state_data.get("artifact_revision", 0),
+        # A State.next_by_approval state (onboarding) has several valid
+        # approval types instead of one -- one button per type, each its
+        # own callback token/payload, so clicking any of them resolves to
+        # exactly that type (apply_approval() -> advance() picks the
+        # matching destination). An ordinary single-approval_type state
+        # still gets exactly the one button it always did.
+        approval_types = (
+            list(state.next_by_approval) if state.next_by_approval
+            else ([state.approval_type] if state.approval_type else [])
         )
-        reply_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"Approve ({state.approval_type})", callback_data=token),
-        ]])
+        buttons = []
+        for approval_type in approval_types:
+            token = secrets.token_hex(4)
+            app.bot_data["callback_table"][token] = CallbackPayload(
+                project_id=job.project_id, approval_type=approval_type,
+                artifact_revision=state_data.get("artifact_revision", 0),
+            )
+            buttons.append(InlineKeyboardButton(f"Approve ({approval_type})", callback_data=token))
+        if buttons:
+            reply_markup = InlineKeyboardMarkup([[b] for b in buttons])
 
     if outcome.failed:
         reason = outcome.failure_reason or "no reason reported"

@@ -19,6 +19,7 @@ rather than silently `git init`-ing a directory nobody asked us to.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -28,11 +29,26 @@ from pathlib import Path
 # "everything in it is new" rather than crashing on a missing revision.
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+# Deliberately narrow -- HTTPS github.com only, no other host, no ssh
+# form. This is the one URL string in the whole system that reaches a
+# subprocess argv straight from a Telegram message a human typed, so the
+# allowlist itself is the security boundary, not just validation: `--`
+# before the URL in clone() stops an argv that starts with `-` from being
+# read as a git flag, and this regex stops anything that isn't obviously
+# a real repository URL from reaching that argv at all. Broaden later
+# (other hosts, ssh) only with the same care, not by loosening this.
+GITHUB_HTTPS_RE = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
 
 class ProjectGitError(Exception):
     """A git operation failed unexpectedly on a project tree already
     confirmed to be a git repo. Not raised for "this isn't a git repo" --
     that is a normal, supported case, not an error."""
+
+
+class InvalidRepositoryUrl(Exception):
+    """A clone() URL that isn't a recognizable https://github.com/<owner>/
+    <repo> URL -- rejected before it ever reaches a subprocess argv."""
 
 
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -118,3 +134,39 @@ def diff(project_root: Path, base_revision: str | None, *, to_revision: str = "H
     if result.returncode != 0:
         return ""
     return result.stdout
+
+
+def repo_name_from_url(url: str) -> str:
+    """The `<repo>` in `https://github.com/<owner>/<repo>` -- the natural
+    default project name for something imported this way. Raises
+    InvalidRepositoryUrl for anything clone() would also reject, so a
+    caller can validate+derive-the-name in one call before doing anything
+    that touches the filesystem."""
+    match = GITHUB_HTTPS_RE.match(url.strip())
+    if not match:
+        raise InvalidRepositoryUrl(f"not a github.com HTTPS URL: {url!r}")
+    return match.group(2)
+
+
+def clone(url: str, dest: Path) -> None:
+    """Clone a GitHub repository into `dest`, which must not already exist.
+
+    Shallow (--depth 50): onboarding needs recent history for context
+    (`git log`), not the complete archive -- a full clone of a large
+    repository would be a slow, unnecessary cost for a one-time audit.
+    `--` before the URL is a second, independent safeguard alongside
+    GITHUB_HTTPS_RE (see its own comment) against an argv that starts with
+    `-` being read as a git flag instead of a positional URL.
+    """
+    if not GITHUB_HTTPS_RE.match(url.strip()):
+        raise InvalidRepositoryUrl(f"not a github.com HTTPS URL: {url!r}")
+    if dest.exists():
+        raise ProjectGitError(f"{dest} already exists -- refusing to clone over it")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["git", "clone", "--depth", "50", "--", url.strip(), str(dest)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise ProjectGitError(f"git clone failed: {result.stderr.strip()}")

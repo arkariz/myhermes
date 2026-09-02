@@ -27,7 +27,7 @@ from ..adapters.telegram.topics import ForumTopicError, create_forum_topic
 from ..adapters.workspace import WorkspaceAlreadyExists, init_workspace
 
 from ..app.approval_flow import apply_approval, default_continuation_message
-from ..app.project_creation import create_project
+from ..app.project_creation import IMPORT_PROJECT_APPROVAL, create_project
 from ..domain.approvals import ApprovalError
 from ..domain.roles import AgentsConfig, ModelsConfig
 from ..app.turn_runner import TurnBlocked, TurnRunner
@@ -78,7 +78,7 @@ def cmd_project_new(args: argparse.Namespace) -> int:
         # IMPORT_PROJECT`, then auto-continues into onboarding's first
         # turn (the auditor role, see config/workflow.yaml's `onboarding`
         # state) exactly like any other approval does.
-        return _approve_and_continue(args.name, store, workflow, "IMPORT_PROJECT")
+        return _approve_and_continue(args.name, store, workflow, IMPORT_PROJECT_APPROVAL)
 
     return 0
 

@@ -2,7 +2,16 @@ import subprocess
 
 import pytest
 
-from agentic_dev.adapters.git.project import ProjectGitError, commit_all, current_revision, diff, is_git_repo
+from agentic_dev.adapters.git.project import (
+    InvalidRepositoryUrl,
+    ProjectGitError,
+    clone,
+    commit_all,
+    current_revision,
+    diff,
+    is_git_repo,
+    repo_name_from_url,
+)
 
 
 def _git(args, cwd):
@@ -88,3 +97,57 @@ def test_diff_between_two_real_revisions_shows_only_the_change(tmp_path):
 
     assert "+class B {}" in result
     assert "class A" not in result
+
+
+# ---- clone() / repo_name_from_url() -----------------------------------------
+
+
+@pytest.mark.parametrize("url,expected_name", [
+    ("https://github.com/owner/repo", "repo"),
+    ("https://github.com/owner/repo.git", "repo"),
+    ("https://github.com/owner/repo/", "repo"),
+    ("https://github.com/owner/dot.dot.repo", "dot.dot.repo"),
+    ("https://github.com/owner/repo-with-dashes_and_underscores", "repo-with-dashes_and_underscores"),
+])
+def test_repo_name_from_url_extracts_the_repo_name(url, expected_name):
+    assert repo_name_from_url(url) == expected_name
+
+
+@pytest.mark.parametrize("bad_url", [
+    "not a url at all",
+    "http://github.com/owner/repo",           # not https
+    "https://gitlab.com/owner/repo",           # not github.com
+    "https://github.com/owner",                # no repo segment
+    "git@github.com:owner/repo.git",           # ssh form, out of scope
+    "https://github.com/owner/repo; rm -rf /", # not a real repo path
+    "--upload-pack=evil",                      # argv-injection shaped
+])
+def test_repo_name_from_url_rejects_anything_not_a_plain_github_https_url(bad_url):
+    with pytest.raises(InvalidRepositoryUrl):
+        repo_name_from_url(bad_url)
+
+
+def test_clone_rejects_a_non_github_url_without_touching_the_filesystem(tmp_path):
+    dest = tmp_path / "dest"
+    with pytest.raises(InvalidRepositoryUrl):
+        clone("https://gitlab.com/owner/repo", dest)
+    assert not dest.exists()
+
+
+def test_clone_rejects_an_argv_injection_shaped_url(tmp_path):
+    dest = tmp_path / "dest"
+    with pytest.raises(InvalidRepositoryUrl):
+        clone("--upload-pack=touch /tmp/pwned", dest)
+    assert not dest.exists()
+
+
+def test_clone_refuses_to_overwrite_an_existing_destination(tmp_path):
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "marker.txt").write_text("already here", encoding="utf-8")
+
+    with pytest.raises(ProjectGitError, match="already exists"):
+        clone("https://github.com/octocat/Hello-World", dest)
+
+    # untouched -- the existence check must run before anything destructive
+    assert (dest / "marker.txt").read_text(encoding="utf-8") == "already here"

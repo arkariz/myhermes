@@ -83,6 +83,7 @@ def bot_data(tmp_path):
         "inbox": asyncio.Queue(),
         "callback_table": {},
         "pending_create": {},
+        "pending_import": {},
     }
 
 
@@ -601,3 +602,284 @@ async def test_create_survives_a_forum_topic_failure(bot_data, tmp_path, monkeyp
     entry = bot_data["registry"].get("orphan-app")
     assert entry.telegram_chat_id is None
     assert "couldn't create a forum topic" in update2.message.reply_text.await_args.args[0]
+
+
+# ---- /import -------------------------------------------------------------
+
+IMPORT_WORKFLOW_YAML = """
+initial: backlog
+states:
+  backlog:
+    kind: gate
+    next_by_approval:
+      START_PROJECT: planning
+      IMPORT_PROJECT: onboarding
+  onboarding:
+    kind: collaborative
+    role: auditor
+    artifact: onboarding-report.md
+    completion: approval
+    next_by_approval:
+      TO_IMPLEMENTATION: done
+  planning:
+    kind: collaborative
+    role: planner
+    artifact: prd.md
+    completion: approval
+    approval_type: APPROVE_PRD
+    next: done
+  done:
+    kind: terminal
+"""
+
+IMPORT_AGENTS_YAML = """
+defaults: {toolsets: [skills], context_mode: assembled}
+roles:
+  planner:
+    context_mode: assembled
+    toolsets: [skills]
+    budget: {max_input_tokens: 12000, max_output_tokens: 4000}
+  auditor:
+    context_mode: guided
+    toolsets: [skills, terminal, file]
+    budget: {max_input_tokens: 24000, max_output_tokens: 6000}
+"""
+
+IMPORT_MODELS_YAML = """
+routing:
+  planner: {provider: openrouter, model: openai/gpt-4o-mini}
+  auditor: {provider: openrouter, model: openai/gpt-4o-mini}
+"""
+
+
+def _fake_clone(url, dest):
+    """Stands in for a real `git clone` -- just materializes the
+    destination directory, since nothing under test needs real repo
+    content, only that cloning "happened" and dest now exists."""
+    dest.mkdir(parents=True)
+
+
+def make_import_context(bot_data, token="fake-bot-token", args=None):
+    context = make_context(bot_data, args=args)
+    context.bot.token = token
+    context.bot.send_message = AsyncMock()
+    return context
+
+
+def _setup_import_workflow(bot_data):
+    (bot_data["config_dir"] / "workflow.yaml").write_text(IMPORT_WORKFLOW_YAML)
+    (bot_data["config_dir"] / "agents.yaml").write_text(IMPORT_AGENTS_YAML)
+    (bot_data["config_dir"] / "models.yaml").write_text(IMPORT_MODELS_YAML)
+
+
+@pytest.mark.asyncio
+async def test_import_with_no_args_sets_pending_and_asks_for_url(bot_data):
+    update = make_update(chat_id=200)
+    context = make_import_context(bot_data)
+
+    await handlers.cmd_import(update, context)
+
+    assert (200, None) in bot_data["pending_import"]
+    assert "github" in update.message.reply_text.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_import_with_url_arg_skips_the_follow_up_question(bot_data, tmp_path, monkeypatch):
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+    monkeypatch.setattr(handlers, "clone", _fake_clone)
+    monkeypatch.setattr(handlers, "create_forum_topic", lambda token, chat_id, name: 1)
+
+    update = make_update(chat_id=200, args=["https://github.com/octocat/Hello-World"])
+    context = make_import_context(bot_data, args=["https://github.com/octocat/Hello-World"])
+
+    await handlers.cmd_import(update, context)
+
+    assert (200, None) not in bot_data["pending_import"]
+    entry = bot_data["registry"].get("Hello-World")
+    assert entry.host_path == str(tmp_path / "projects" / "Hello-World")
+
+
+@pytest.mark.asyncio
+async def test_url_after_import_clones_registers_and_starts_onboarding(
+    bot_data, tmp_path, monkeypatch,
+):
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+    cloned = {}
+
+    def fake_clone(url, dest):
+        cloned["args"] = (url, dest)
+        dest.mkdir(parents=True)
+
+    monkeypatch.setattr(handlers, "clone", fake_clone)
+    monkeypatch.setattr(handlers, "create_forum_topic", lambda token, chat_id, name: 42)
+
+    update = make_update(chat_id=200, text="/import")
+    context = make_import_context(bot_data)
+    await handlers.cmd_import(update, context)
+
+    update2 = make_update(chat_id=200, text="https://github.com/octocat/Hello-World")
+    await handlers.handle_message(update2, context)
+
+    assert cloned["args"] == (
+        "https://github.com/octocat/Hello-World", tmp_path / "projects" / "Hello-World",
+    )
+    entry = bot_data["registry"].get("Hello-World")
+    assert entry.telegram_chat_id == 200
+    assert entry.telegram_thread_id == 42
+    store = ProjectStore(entry.state_path)
+    assert store.read_state()["workflow_state"] == "onboarding"
+
+    # onboarding's first turn (the auditor) is enqueued, never run inline
+    assert bot_data["inbox"].qsize() == 1
+    job = bot_data["inbox"].get_nowait()
+    assert job.project_id == "Hello-World"
+
+
+@pytest.mark.asyncio
+async def test_bare_github_url_with_nothing_linked_triggers_import(bot_data, tmp_path, monkeypatch):
+    # The primary, command-free UX: paste a repo link, onboarding starts.
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+    monkeypatch.setattr(handlers, "clone", _fake_clone)
+    monkeypatch.setattr(handlers, "create_forum_topic", lambda token, chat_id, name: 1)
+
+    update = make_update(chat_id=300, text="https://github.com/octocat/Hello-World")
+    context = make_import_context(bot_data)
+
+    await handlers.handle_message(update, context)
+
+    entry = bot_data["registry"].get("Hello-World")
+    assert entry.telegram_chat_id == 300
+
+
+@pytest.mark.asyncio
+async def test_github_url_in_an_already_linked_topic_is_not_hijacked(bot_data, tmp_path):
+    # A URL pasted as ordinary conversation in a topic that's already
+    # driving a real project must never be reinterpreted as an import.
+    _new_project(bot_data, tmp_path, project_id="toy")
+    bot_data["registry"].link_telegram("toy", chat_id=100, thread_id=None)
+    update = make_update(chat_id=100, text="see https://github.com/octocat/Hello-World for reference")
+    context = make_context(bot_data)
+
+    await handlers.handle_message(update, context)
+
+    job = bot_data["inbox"].get_nowait()
+    assert job.project_id == "toy"
+    with pytest.raises(Exception):
+        bot_data["registry"].get("Hello-World")
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_a_non_github_url(bot_data):
+    update = make_update(chat_id=200, text="/import")
+    context = make_import_context(bot_data)
+    await handlers.cmd_import(update, context)
+
+    update2 = make_update(chat_id=200, text="https://gitlab.com/owner/repo")
+    await handlers.handle_message(update2, context)
+
+    assert "doesn't look like a GitHub URL" in update2.message.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_an_existing_project_name(bot_data, tmp_path):
+    _new_project(bot_data, tmp_path, project_id="Hello-World")
+    update = make_update(chat_id=200, text="/import")
+    context = make_import_context(bot_data)
+    await handlers.cmd_import(update, context)
+
+    update2 = make_update(chat_id=200, text="https://github.com/octocat/Hello-World")
+    await handlers.handle_message(update2, context)
+
+    assert "already exists" in update2.message.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_import_surfaces_a_real_clone_failure(bot_data, tmp_path, monkeypatch):
+    from agentic_dev.adapters.git.project import ProjectGitError
+
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+
+    def fail(url, dest):
+        raise ProjectGitError("git clone failed: repository not found")
+
+    monkeypatch.setattr(handlers, "clone", fail)
+
+    update = make_update(chat_id=200, text="/import")
+    context = make_import_context(bot_data)
+    await handlers.cmd_import(update, context)
+
+    update2 = make_update(chat_id=200, text="https://github.com/octocat/Hello-World")
+    await handlers.handle_message(update2, context)
+
+    assert "Couldn't clone" in update2.message.reply_text.await_args.args[0]
+    with pytest.raises(Exception):
+        bot_data["registry"].get("Hello-World")
+
+
+@pytest.mark.asyncio
+async def test_import_survives_a_forum_topic_failure(bot_data, tmp_path, monkeypatch):
+    from agentic_dev.adapters.telegram.topics import ForumTopicError
+
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+    monkeypatch.setattr(handlers, "clone", _fake_clone)
+
+    def fail_topic(token, chat_id, name):
+        raise ForumTopicError("chat is not a forum")
+
+    monkeypatch.setattr(handlers, "create_forum_topic", fail_topic)
+
+    update = make_update(chat_id=200, text="/import")
+    context = make_import_context(bot_data)
+    await handlers.cmd_import(update, context)
+
+    update2 = make_update(chat_id=200, text="https://github.com/octocat/Hello-World")
+    await handlers.handle_message(update2, context)
+
+    # project (and clone) exist even though the topic couldn't be created
+    entry = bot_data["registry"].get("Hello-World")
+    assert entry.telegram_chat_id is None
+    assert "couldn't create a forum topic" in update2.message.reply_text.await_args.args[0]
+    # no first-turn job enqueued -- nowhere linked to send the response
+    assert bot_data["inbox"].qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_create_still_auto_clears_backlog_with_next_by_approval(bot_data, tmp_path, monkeypatch):
+    # Regression test: backlog now declares next_by_approval (START_PROJECT
+    # + IMPORT_PROJECT) instead of a single approval_type -- plain /create
+    # must still auto-clear it via START_PROJECT specifically.
+    _setup_import_workflow(bot_data)
+    monkeypatch.setattr(
+        handlers, "settings",
+        dataclasses.replace(handlers.settings, telegram_default_host_root=tmp_path / "projects"),
+    )
+    monkeypatch.setattr(handlers, "create_forum_topic", lambda token, chat_id, name: 1)
+
+    update = make_update(chat_id=200)
+    context = make_create_context(bot_data)
+    await handlers.cmd_create(update, context)
+    await handlers.handle_message(make_update(chat_id=200, text="normal-app"), context)
+
+    entry = bot_data["registry"].get("normal-app")
+    store = ProjectStore(entry.state_path)
+    assert store.read_state()["workflow_state"] == "planning"  # not stuck at backlog
